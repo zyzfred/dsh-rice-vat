@@ -17,7 +17,7 @@ import { join } from 'node:path'
 
 const ROUTE_PATH = '/api/rice-bowl'
 const PLUGIN_NAME = 'dsh-rice-vat'
-const PLUGIN_VERSION = '0.5.1'
+const PLUGIN_VERSION = '1.0.1'
 
 /**
  * Rice tiers, in CNY. Four discrete artwork states back these:
@@ -322,6 +322,9 @@ export function apply(ctx) {
     if (candidates === undefined) return false
     return candidates.some((name) => existsSync(new URL(name, ASSET_ROOT)))
   }
+
+  /** Every sprite key the Client can request; each gets its own exact route. */
+  const CACHED_ASSET_KEYS = [...ASSETS.keys()]
 
   const hasVatArt = ['vat-overflow', 'vat-full', 'vat-low', 'vat-empty'].every(assetExists)
   const hasGirlArt = ['girl-idle', 'girl-eat', 'girl-low', 'girl-sleep'].every(assetExists)
@@ -740,13 +743,78 @@ export function apply(ctx) {
     return jsonResponse({ ...doc, cached: false })
   }
 
-  ctx.effect(() =>
-    webServer.register({
-      kind: 'prefix',
-      path: ROUTE_PATH,
-      resource: handle,
-    }),
-  )
+  /**
+   * Node `req`/`res` adapter, used when the installed DSH only accepts the older
+   * `{ handler }` route form (the `{ resource }` form is newer). Same logic, same
+   * responses — only the transport shape differs.
+   */
+  async function nodeHandler(req, res) {
+    let request
+    try {
+      const origin = `http://${req.headers.host ?? '127.0.0.1'}`
+      const headers = new Headers()
+      for (const [key, value] of Object.entries(req.headers)) {
+        if (typeof value === 'string') headers.set(key, value)
+        else if (Array.isArray(value)) headers.set(key, value.join(', '))
+      }
+      request = new Request(new URL(req.url ?? '/', origin), { method: req.method ?? 'GET', headers })
+    } catch {
+      res.statusCode = 400
+      res.end('bad-request')
+      return
+    }
+
+    let response
+    try {
+      response = await handle(request, undefined)
+    } catch {
+      res.statusCode = 500
+      res.end('handler-failed')
+      return
+    }
+
+    const body = Buffer.from(await response.arrayBuffer())
+    for (const [key, value] of response.headers) res.setHeader(key, value)
+    res.statusCode = response.status
+    res.end(body)
+  }
+
+  /**
+   * Register one route, preferring the `resource` form and falling back to the
+   * Node `handler` form on an engine that predates it.
+   */
+  function registerRoute(path) {
+    try {
+      return webServer.register({ kind: 'exact', path, resource: handle })
+    } catch {
+      return webServer.register({ kind: 'exact', path, handler: nodeHandler })
+    }
+  }
+
+  /*
+   * Every route is registered as EXACT.
+   *
+   * A single prefix route at `/api/rice-bowl` is ambiguous: the shared `/api`
+   * bridge is itself a prefix, and DSH 0.2.1 does not resolve that collision the
+   * way 0.2.2 does, so the bridge swallowed every request and answered 401.
+   * Exact routes are the highest-priority match in every version, so no ordering
+   * or longest-prefix rule can shadow them.
+   */
+  const EXACT_ROUTES = [
+    `${ROUTE_PATH}/state`,
+    `${ROUTE_PATH}/pulse`,
+    `${ROUTE_PATH}/ping`,
+    `${ROUTE_PATH}/diag`,
+    `${ROUTE_PATH}/asset/error`,
+    ...CACHED_ASSET_KEYS.map((key) => `${ASSET_PREFIX}${key}.webp`),
+  ]
+
+  ctx.effect(() => {
+    const disposers = EXACT_ROUTES.map((path) => registerRoute(path))
+    return () => {
+      for (const dispose of disposers) dispose()
+    }
+  })
 
   /*
    * Hand each authenticated page render a fresh token. The injection is stored as
