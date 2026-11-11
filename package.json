@@ -1,6 +1,6 @@
 {
   "name": "dsh-rice-vat",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Rice-vat quota dashboard for DeepSeek Harness: account balance as a physical rice level, with a whale-girl companion.",
   "author": "CyberOldJoey",
   "license": "MIT",
