@@ -138,13 +138,22 @@ window.__ModuleLoader__.load({
      * as the balance falls — a continuous rice level with zero extra artwork.
      */
     function Vat({ tier, fill, continuous }) {
+      const [broken, setBroken] = useState(false)
+      if (broken === true) return h(VatFallback, { tier })
+
       if (continuous === true && tier === 'full' && typeof fill === 'number') {
         const t = Math.max(0, Math.min(1, fill))
         const shift = Math.round((1 - t) * 1905) / 100 /* 19.05% = opening height */
         return h(
           'div',
           { className: 'rb-vat' },
-          h('img', { className: 'rb-vat__layer is-on', src: asset('vat-empty'), alt: '', draggable: false }),
+          h('img', {
+            className: 'rb-vat__layer is-on',
+            src: asset('vat-empty'),
+            alt: '',
+            draggable: false,
+            onError: () => setBroken(true),
+          }),
           h(
             'div',
             { className: 'rb-vat__rice-clip' },
@@ -153,6 +162,7 @@ window.__ModuleLoader__.load({
               src: asset('vat-rice-overlay'),
               alt: '',
               draggable: false,
+              onError: () => setBroken(true),
               style: { transform: `translateY(${shift}%)` },
             }),
           ),
@@ -169,6 +179,7 @@ window.__ModuleLoader__.load({
             src: asset(`vat-${name}`),
             alt: '',
             draggable: false,
+            onError: () => setBroken(true),
           }),
         ),
       )
@@ -360,20 +371,25 @@ window.__ModuleLoader__.load({
       const { doc, spend, live, failed, eating } = useQuota()
       const [collapsed, setCollapsed] = useState(false)
 
-      const signIn = doc !== null && doc.signedIn === true
+      const loaded = doc !== null
+      const signIn = loaded && doc.signedIn === true
       const primary = doc?.primary ?? null
-      const mood = moodFor(primary, signIn)
+      /* Before the first state arrives, assume the bundled art exists and show a
+         neutral scene: a fallback flash during loading is worse than a brief blank. */
+      const mood = loaded ? moodFor(primary, signIn) : 'ok'
       const today = spend?.today
       const total = spend?.total
 
       const liveNow = live ?? doc?.live ?? null
       const shownBalance =
         typeof liveNow?.balance === 'number' ? liveNow.balance : primary === null ? null : primary.balance
-      const tier = typeof liveNow?.tier === 'string' ? liveNow.tier : tierFor(shownBalance)
-      const girlArt = doc?.art?.girl === true
-      const continuousArt = doc?.art?.continuous === true
+      const tier =
+        typeof liveNow?.tier === 'string' ? liveNow.tier : loaded ? tierFor(shownBalance) : 'full'
+      const girlArt = loaded ? doc.art?.girl === true : true
+      const continuousArt = loaded ? doc.art?.continuous === true : true
+      const vatArt = loaded ? doc.art?.vat === true : true
       const fill =
-        shownBalance === null ? 0 : Math.max(0, Math.min(1, (shownBalance - LOW_AT) / (FULL_AT - LOW_AT)))
+        shownBalance === null ? 1 : Math.max(0, Math.min(1, (shownBalance - LOW_AT) / (FULL_AT - LOW_AT)))
 
       if (collapsed) {
         return h(
@@ -410,7 +426,7 @@ window.__ModuleLoader__.load({
               '—',
             ),
           ),
-          h(Scene, { tier, mood, eating, girlArt, vatArt: doc?.art?.vat === true, continuousArt, fill }),
+          h(Scene, { tier, mood, eating, girlArt, vatArt, continuousArt, fill }),
           h(
             'div',
             { className: 'rb-amount' },
@@ -424,10 +440,12 @@ window.__ModuleLoader__.load({
           h(
             'div',
             { className: 'rb-sub' },
-            !signIn
-              ? failed
-                ? '面板数据读取失败'
-                : '未登录 DeepSeek 账户'
+            !loaded
+              ? '正在读数…'
+              : !signIn
+                ? failed
+                  ? '面板数据读取失败'
+                  : '未登录 DeepSeek 账户'
               : primary
                 ? `充值 ${formatMoney(primary.recharge)} · 赠金 ${formatMoney(primary.bonus)}`
                 : '余额不可用',
