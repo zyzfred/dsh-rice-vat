@@ -4,7 +4,11 @@ A DeepSeek Harness UI plugin that shows the account balance as a **rice vat**,
 with a Q-version whale-girl (鲸鱼娘) companion who eats the rice while you spend
 and falls asleep on the empty vat when it runs out.
 
+![卡片](docs/card.png)
+
 ## 四档米位
+
+![四档米位](docs/states.png)
 
 The artwork is four discrete states, selected by balance:
 
@@ -29,6 +33,8 @@ Thresholds are fixed by design and **not** configurable.
 | 吃米 | 每次模型调用产生消耗 | `girl-eat`：**16 帧动画**（4.6s，碗里的米吃到见底）+ 米粒飞溅 |
 | 告急 | 0 < 余额 ≤ ¥6 | `girl-low` |
 | 空缸 | 余额 = 0 | `girl-sleep` **叠在** `vat-empty` 上 |
+
+![提示牌与木牌](docs/hint-plate.png)
 
 吃米时的演出：米粒从**她怀里的碗**中溅出，鲸鱼娘切到埋头吃的姿态。
 米缸**始终显示真实余额档位**，不参与吃米演出。
