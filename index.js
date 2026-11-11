@@ -308,6 +308,8 @@ export function apply(ctx) {
     ['vat-rice-overlay', ['vat-rice-overlay.webp', 'vat-rice-overlay.png']],
     ['girl-idle', ['girl-idle.webp', 'girl-idle.png']],
     ['girl-eat', ['girl-eat.webp', 'girl-eat.png']],
+    /* Static first frame: used when a decoder rejects the 16-frame animated WebP. */
+    ['girl-eat-still', ['girl-eat-still.webp']],
     ['girl-low', ['girl-low.webp', 'girl-low.png']],
     ['girl-sleep', ['girl-sleep.webp', 'girl-sleep.png']],
   ])

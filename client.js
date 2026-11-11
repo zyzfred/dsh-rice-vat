@@ -149,7 +149,10 @@ window.__ModuleLoader__.load({
      * as the balance falls — a continuous rice level with zero extra artwork.
      */
     function Vat({ tier, fill, continuous }) {
-      const [broken, setBroken] = useState(false)
+      const [failed, setFailed] = useState(0)
+      const broken = failed >= 2
+      const bust = failed === 1 ? '&r=1' : ''
+      const fail = () => setFailed((current) => current + 1)
       if (broken === true) return h(VatFallback, { tier })
 
       if (continuous === true && tier === 'full' && typeof fill === 'number') {
@@ -160,20 +163,20 @@ window.__ModuleLoader__.load({
           { className: 'rb-vat' },
           h('img', {
             className: 'rb-vat__layer is-on',
-            src: asset('vat-empty'),
+            src: asset('vat-empty') + bust,
             alt: '',
             draggable: false,
-            onError: () => setBroken(true),
+            onError: fail,
           }),
           h(
             'div',
             { className: 'rb-vat__rice-clip' },
             h('img', {
               className: 'rb-vat__rice',
-              src: asset('vat-rice-overlay'),
+              src: asset('vat-rice-overlay') + bust,
               alt: '',
               draggable: false,
-              onError: () => setBroken(true),
+              onError: fail,
               style: { transform: `translateY(${shift}%)` },
             }),
           ),
@@ -187,10 +190,10 @@ window.__ModuleLoader__.load({
           h('img', {
             key: name,
             className: `rb-vat__layer rb-vat__layer--${name}${name === tier ? ' is-on' : ''}`,
-            src: asset(`vat-${name}`),
+            src: asset(`vat-${name}`) + bust,
             alt: '',
             draggable: false,
-            onError: () => setBroken(true),
+            onError: fail,
           }),
         ),
       )
@@ -243,20 +246,43 @@ window.__ModuleLoader__.load({
     }
 
     /** Picks the pose from the mood and the live eating flag. */
+    /** A pose that needs a plain still image when its animated form will not decode. */
+    const GIRL_STILL = { 'girl-eat': 'girl-eat-still' }
+
+    /**
+     * Pose rendering with a retry chain instead of a one-shot latch:
+     *
+     *   0 animated        1 animated + cache buster        2 static still        3 SVG
+     *
+     * A single transient failure (startup race, aborted request) used to disable the
+     * sprite for the whole session; now it costs one retry and then falls back to
+     * the still frame before anything hand-drawn appears.
+     */
     function Girl({ mood, eating, available }) {
       const name = eating ? GIRL_FOR.eat : mood === 'empty' ? GIRL_FOR.sleep : mood === 'low' ? GIRL_FOR.low : GIRL_FOR.idle
-      const [broken, setBroken] = useState(false)
+      const still = GIRL_STILL[name]
+      const [step, setStep] = useState(0)
 
-      if (available !== true || broken) return h(WhaleGirlFallback, { mood })
+      useEffect(() => {
+        setStep(0)
+      }, [name])
 
       const cls = eating ? 'eating' : mood === 'empty' ? 'empty' : mood === 'low' ? 'worried' : 'idle'
+      const fallback = () => h(WhaleGirlFallback, { mood })
+
+      if (available !== true || step >= 3) return fallback()
+
+      const source = step >= 2 ? still : name
+      if (source === undefined) return fallback()
+
+      const src = step === 1 ? `${asset(source)}&r=1` : asset(source)
       return h('img', {
-        key: name,
+        key: `${source}:${step}`,
         className: `rb-girl rb-girl--${cls}`,
-        src: asset(name),
+        src,
         alt: '鲸鱼娘',
         draggable: false,
-        onError: () => setBroken(true),
+        onError: () => setStep((current) => (current >= 3 ? 3 : current + 1)),
       })
     }
 
