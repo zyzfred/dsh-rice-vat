@@ -64,6 +64,9 @@ window.__ModuleLoader__.load({
 
         fetch('/api/rice-bowl/ping', { cache: 'no-store', headers: AUTH_HEADERS }).catch(() => {})
 
+        let retry = null
+        let backoff = 3_000
+
         async function loadState() {
           try {
             const response = await fetch(STATE_URL, {
@@ -77,8 +80,15 @@ window.__ModuleLoader__.load({
             if (body.spend) setSpend(body.spend)
             if (body.live) setLive(body.live)
             setFailed(false)
+            backoff = 3_000
           } catch {
-            if (alive) setFailed(true)
+            if (!alive) return
+            setFailed(true)
+            /* The host half may still be coming up (install without restart, or a
+               plugin row that has not activated). Retry quickly, then back off. */
+            if (retry !== null) clearTimeout(retry)
+            retry = setTimeout(loadState, backoff)
+            backoff = Math.min(backoff * 2, 30_000)
           }
         }
 
@@ -87,6 +97,7 @@ window.__ModuleLoader__.load({
         return () => {
           alive = false
           clearInterval(timer)
+          if (retry !== null) clearTimeout(retry)
         }
       }, [])
 
@@ -341,7 +352,8 @@ window.__ModuleLoader__.load({
      * girl is doing. `fill` only refines the wide 6–100 band so the words stay true
      * as the rice drains.
      */
-    function hintFor({ eating, stale, mood, tier, fill }) {
+    function hintFor({ loaded, failed, eating, stale, mood, tier, fill }) {
+      if (loaded === false) return failed === true ? '读取失败' : '—'
       if (eating) return '正在炫米...'
       if (stale === true) return '信号不稳'
       if (mood === 'empty') return '没有米了，晕碳中'
@@ -441,7 +453,9 @@ window.__ModuleLoader__.load({
             'div',
             { className: 'rb-sub' },
             !loaded
-              ? '正在读数…'
+              ? failed
+                ? '插件未就绪 · 请重启 DSH'
+                : '正在读数…'
               : !signIn
                 ? failed
                   ? '面板数据读取失败'
@@ -494,7 +508,7 @@ window.__ModuleLoader__.load({
                 h(
                   'span',
                   { className: 'rb-bubble__text' },
-                  hintFor({ eating, stale: doc?.stale === true, mood, tier, fill }),
+                  hintFor({ loaded, failed, eating, stale: doc?.stale === true, mood, tier, fill }),
                 ),
               ),
             ),
