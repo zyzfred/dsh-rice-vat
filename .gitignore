@@ -1,0 +1,6 @@
+node_modules/
+*.tgz
+.DS_Store
+preview/
+assets/raw/*
+!assets/raw/README.md

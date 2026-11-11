@@ -1,0 +1,18 @@
+{
+  "meta": {
+    "title": "米缸",
+    "description": "把 DeepSeek 账户余额显示成蓝色米缸里的米位，旁边有鲸鱼娘陪着；米吃完了她就趴着睡觉。"
+  },
+  "ui": {
+    "title": "米缸",
+    "collapse": "收起",
+    "expand": "展开米缸",
+    "today": "今日",
+    "total": "累计",
+    "signedOut": "未登录 DeepSeek 账户",
+    "loadFailed": "面板数据读取失败",
+    "refreshFailed": "余额刷新失败，显示上次结果",
+    "noRice": "没米了，鲸鱼娘在睡觉",
+    "scale": "满缸 ¥30 · 见底 ¥6"
+  }
+}

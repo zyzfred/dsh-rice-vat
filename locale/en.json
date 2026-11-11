@@ -1,0 +1,18 @@
+{
+  "meta": {
+    "title": "Rice vat",
+    "description": "Shows the DeepSeek account balance as the rice level in a blue vat, with a whale-girl companion who dozes off when the vat runs empty."
+  },
+  "ui": {
+    "title": "Rice vat",
+    "collapse": "Collapse",
+    "expand": "Expand the rice vat",
+    "today": "Today",
+    "total": "Total",
+    "signedOut": "Not signed in to a DeepSeek account",
+    "loadFailed": "Could not read the panel data",
+    "refreshFailed": "Balance refresh failed; showing the last result",
+    "noRice": "Out of rice, the whale girl is asleep",
+    "scale": "Full at ¥30 · bare at ¥6"
+  }
+}

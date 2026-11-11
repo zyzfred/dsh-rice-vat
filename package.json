@@ -1,0 +1,51 @@
+{
+  "name": "dsh-rice-vat",
+  "version": "1.0.0",
+  "description": "Rice-vat quota dashboard for DeepSeek Harness: account balance as a physical rice level, with a whale-girl companion.",
+  "author": "CyberOldJoey",
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zyzfred/dsh-rice-vat.git"
+  },
+  "homepage": "https://github.com/zyzfred/dsh-rice-vat#readme",
+  "bugs": {
+    "url": "https://github.com/zyzfred/dsh-rice-vat/issues"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek",
+    "deepseek-harness",
+    "balance",
+    "quota",
+    "dashboard"
+  ],
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "LICENSE",
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "assets/*.webp",
+    "assets/ATTRIBUTION.md",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true
+    }
+  }
+}

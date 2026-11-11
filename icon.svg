@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Rice vat">
+  <defs>
+    <linearGradient id="vat" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3d76e8"/>
+      <stop offset="1" stop-color="#16307d"/>
+    </linearGradient>
+    <linearGradient id="rice" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fffdf6"/>
+      <stop offset="1" stop-color="#ecdfc0"/>
+    </linearGradient>
+  </defs>
+  <path d="M12 18 L52 18 L47 52 Q32 56 17 52 Z" fill="url(#vat)"/>
+  <path d="M16 21 L48 21 L44 50 Q32 53 20 50 Z" fill="#0b1a45"/>
+  <ellipse cx="32" cy="44" rx="13" ry="5" fill="url(#rice)"/>
+  <rect x="19" y="28" width="26" height="16" fill="url(#rice)" opacity="0.92"/>
+  <ellipse cx="32" cy="28" rx="13" ry="4.6" fill="#fffefb"/>
+  <ellipse cx="32" cy="18" rx="20" ry="4" fill="#3d76e8" stroke="#0d1f52" stroke-width="1.2"/>
+  <ellipse cx="32" cy="18" rx="16" ry="2.6" fill="#0b1a45"/>
+  <path d="M22 15 Q30 12 40 13" fill="none" stroke="rgba(255,255,255,.6)" stroke-width="1.4" stroke-linecap="round"/>
+  <path d="M45 9 q6 -1 7 4 q-5 1 -7 -4 z" fill="#2f86dd"/>
+</svg>
