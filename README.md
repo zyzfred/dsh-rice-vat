@@ -1,114 +1,203 @@
-# 米缸 · Rice vat
+# 米缸 · dsh-rice-vat
 
-A DeepSeek Harness UI plugin that shows the account balance as a **rice vat**,
-with a Q-version whale-girl (鲸鱼娘) companion who eats the rice while you spend
-and falls asleep on the empty vat when it runs out.
+> 把 DeepSeek 账户余额变成**一缸米**。鲸鱼娘守着缸，你每花一笔，她就吃一口。
+
+[![npm](https://img.shields.io/npm/v/dsh-rice-vat)](https://www.npmjs.com/package/dsh-rice-vat)
+[![license](https://img.shields.io/npm/l/dsh-rice-vat)](LICENSE)
+[![DSH](https://img.shields.io/badge/DSH-%E2%89%A5%200.2.1--rc.2-blue)]()
 
 ![卡片](docs/card.png)
 
+---
+
+## 安装
+
+### 方式一：让 DSH 的 agent 帮你装（最简单）
+
+新建一个会话，对它说：
+
+> 安装 DSH 插件 `dsh-rice-vat`，最新版
+
+它调用 `plugin_manager` 时会弹确认，批准即可。
+
+### 方式二：手动
+
+```
+plugin_manager  install_bundle  dsh-rice-vat@1.0.2
+```
+
+或者命令行：
+
+```bash
+npm install -g dsh-rice-vat
+```
+
+### ⚠️ 装完必须**完全退出 DSH 再打开**
+
+不是刷新页面，是**退出应用**。
+
+插件由两半组成：客户端（面板 UI）和 Host（数据路由）。客户端刷新页面就能加载，**Host 半必须等 DSH 重新启动才会注册路由**。只刷新不重启，就会看到「面板出现了但一直显示正在读数」—— 那是 Host 半没起来。
+
+如果重启后仍不正常，到「插件」页把 `dsh-rice-vat` 的开关**关掉再打开**。
+
+### 运行要求
+
+| 项 | 要求 |
+|---|---|
+| DSH | **≥ 0.2.1-rc.2** |
+| 插件版本 | **≥ 1.0.2**（1.0.0 / 1.0.1 在 0.2.1 上不可用，`1.0.1` 已标记 deprecated） |
+| DeepSeek 账号 | **需要登录**，余额通过账号服务读取 |
+| API Key | **不需要**，插件完全不读 key |
+
+---
+
+## 它有什么
+
+### 🍚 余额就是米位
+
+不是又一个数字，而是**余光扫一眼就知道还剩多少**。
+
+- **> ¥100** — 米堆成小山，溢出缸口
+- **¥6 – ¥100** — 米面在缸口内**连续下降**（不是四段跳变）
+- **¥0 – ¥6** — 缸底只剩几粒米
+- **¥0** — 空缸，她直接趴在缸口上睡着
+
+### 🐋 吃米动画
+
+每产生一次模型调用消耗，她就切到「端着碗吃米饭」的 16 帧动画（4.6 秒循环），米粒从碗里溅出，碗里的米**越吃越少直到见底**。米缸本身不参与演出，始终显示真实余额。
+
+### 🪧 气泡提示牌
+
+一块蓝白渐变的提示牌，用一句话说明**米缸当前的状态**（不是描述她在干嘛）：
+
+| 情形 | 提示 |
+|---|---|
+| 余额 > ¥100 | 米缸溢出来了 |
+| 米位 ≥ 70% | 米缸满满 |
+| 米位 30–70% | 米缸过半 |
+| 米位 < 30% | 米缸见底了 |
+| 空缸 | 没有米了，晕碳中 |
+| 吃米中 | 正在炫米... |
+| 数据拉取失败 | 信号不稳 |
+
+### 🏷️ 米价木牌
+
+DeepSeek 有峰谷计价：北京时间工作日 9–12、14–18 为高峰，其余时段**半价**。空闲时段木牌会亮成橙色显示「当前米价 · 减半」。
+
+### 📊 本地消耗统计
+
+今日炫米 / 累计炫米，按真实 token 用量折算成金额，落在本地账本。
+
+---
+
 ## 四档米位
 
-![四档米位](docs/states.png)
-
-The artwork is four discrete states, selected by balance:
+![四档](docs/states.png)
 
 | 余额 | 米位 | 实现 |
 |---|---|---|
-| **> ¥100** | 米堆成小山，溢出缸口 | `vat-overflow` 原画 |
-| **¥6 – ¥100** | 米面**连续下降** | `vat-empty` + 米面叠加层，按余额在缸口内下移 |
-| **¥0 – ¥6** | 缸底只剩几粒米 | `vat-low` 原画 |
-| **¥0** | 空缸，她趴在上面睡 | `vat-empty` + `girl-sleep` |
+| **> ¥100** | 米堆成小山 | `vat-overflow` 原画 |
+| **¥6 – ¥100** | 米面连续下降 | 空缸 + 米面层按余额在缸口内下移（最大 19.05%） |
+| **¥0 – ¥6** | 缸底几粒米 | `vat-low` 原画 |
+| **¥0** | 空缸，她趴在上面睡 | `vat-empty` + `girl-sleep`（上移 52%） |
 
-中间段没有原画，用素材包自带的 `vat-rice-mask` / `vat-rice-overlay` 合成：
-空缸为底，米面层按「(余额−6)/94」在缸口内下移，最大位移 19.05%（= 缸口可见高度）。
-`vat-full` 原画保留为合成不可用时的兜底。
+中间段没有现成原画，用素材包自带的缸口遮罩 + 米面叠加层合成，所以升降是平滑的而不是跳档。
 
-Thresholds are fixed by design and **not** configurable.
+---
 
-## 状态
-
-| 状态 | 触发 | 素材 |
-|---|---|---|
-| 待机 | 默认 | `girl-idle` |
-| 吃米 | 每次模型调用产生消耗 | `girl-eat`：**16 帧动画**（4.6s，碗里的米吃到见底）+ 米粒飞溅 |
-| 告急 | 0 < 余额 ≤ ¥6 | `girl-low` |
-| 空缸 | 余额 = 0 | `girl-sleep` **叠在** `vat-empty` 上 |
-
-![提示牌与木牌](docs/hint-plate.png)
-
-吃米时的演出：米粒从**她怀里的碗**中溅出，鲸鱼娘切到埋头吃的姿态。
-米缸**始终显示真实余额档位**，不参与吃米演出。
-
-> 碗里的米「越吃越少直到见底」需要额外帧素材（原画里碗内壁被米挡住，无法合成），
-> 规格见 `ASSETS-SPEC.md` §5.5。
-
-## 渲染位置
-
-挂在 `shell.overlay`（全框浮层），以 CSS 定位停在侧边栏底部。
-侧边栏本身是 `single` 槽位，替换它等于重写整列，所以本插件只做视觉锚定，不占布局位。
-
-## 数据
+## 数据从哪来
 
 | 字段 | 来源 |
 |---|---|
-| 余额、充值、赠金 | `ctx.deepseekAccount.getBalance()`（Host） |
-| 今日 / 累计消耗 | `session/event` → `assistant/message.usage`，在 Host 折叠 |
-| 实时余额 | 锚点余额 − 锚点之后累计消耗（pulse 每 1.5s 下发） |
-| 计价 | 内置 DeepSeek CNY 价目表 |
-| 多 key 余额 | 未实现 |
+| 余额 / 充值 / 赠金 | `ctx.deepseekAccount.getBalance()`（Host） |
+| 今日 / 累计消耗 | 会话事件 `assistant/message.usage`，在 Host 折叠 |
+| 实时余额 | 锚点余额 − 锚点后累计消耗，1.5 秒一次心跳 |
+| 计价 | 内置 DeepSeek 官方价目表 |
 
-累计统计**从插件首次加载开始**，不回放历史会话。DSH 之外的消耗会降低余额但不会被归因。
-
-### 计价
+### 计价表（元 / 百万 tokens）
 
 | 模型 | 输入（缓存命中） | 输入（未命中） | 输出 |
 |---|---|---|---|
 | `deepseek-flash` | ¥0.04 / ¥0.02 | ¥2 / ¥1 | ¥8 / ¥4 |
 | `deepseek-v4-pro` | ¥0.30 / ¥0.15 | ¥9.0 / ¥4.5 | ¥27.0 / ¥13.5 |
 
-前为高峰价，后为空闲价（正好半价）。高峰 = 北京时间工作日 9:00–12:00、14:00–18:00。
-**中国法定节假日未建模**，节假日流量会高估。未知模型按 flash 计价。
+前为高峰价，后为空闲价（正好半价）。**中国法定节假日未建模**，节假日流量会高估。未知模型按 flash 计价。
 
-面板用一块木牌提示价格：空闲时段显示「今日米价 · 减半」。
+---
 
-## 路由
+## 隐私与鉴权
 
-| 路由 | 鉴权 | 用途 |
-|---|---|---|
-| `GET /api/rice-bowl/state` | owner | 余额 + 消耗文档 |
-| `GET /api/rice-bowl/pulse` | owner | 1.5s 轻量消耗与实时米位 |
-| `GET /api/rice-bowl/asset/<name>.webp` | 公开 | 素材（不含账户数据） |
-| `GET /api/rice-bowl/ping` | 公开 | 客户端挂载心跳 |
-| `GET /api/rice-bowl/diag` | 公开 | 只有计数器，绝不含余额 |
+- **完全不读取 API key**，只走已登录的账号服务。
+- 余额数据只通过 **owner 授权的路由**离开 Host：Host 在渲染页面时签发一次性令牌并注入页面全局，客户端回传 `x-rice-bowl-token` 才放行。
+- 令牌以 **SHA-256 哈希**落盘（`$DSH_HOME/rice-bowl/tokens.json`，权限 0600），进程重启或插件重载都不会让已打开的页面失效。
+- 账本在 `$DSH_HOME/rice-bowl/ledger.json`，只存金额，不上传任何东西。
 
-数据路由 fail-closed。自有前缀路由拿不到共享 `/api` 的 peer，因此 Host 在渲染 index 时
-签发页面令牌并注入 `__RICE_BOWL_TOKEN__`，客户端回传 `x-rice-bowl-token`。
-令牌以 **SHA-256 哈希**落盘（`$DSH_HOME/rice-bowl/tokens.json`，0600），
-进程重启或插件重载都不会让已打开的页面失效。
+---
 
-## 隐私
+## 已知限制
 
-- 本版本**完全不读取 API key**。
-- 余额只会通过 owner 授权的路由离开 Host。
-- 余额响应缓存 45s，面板轮询不会打爆接口。
-- 账本在 `$DSH_HOME/rice-bowl/ledger.json`，只存金额。
+- **侧边栏折叠时**卡片可能压住内容 —— 它挂在 `shell.overlay` 上做视觉锚定，不占布局位。右上角 `—` 可收起成小米粒药丸。
+- **统计从安装那一刻开始**，不回填历史消耗（避免全量重放会话日志）。
+- **DSH 之外**用同一账号花的钱会降低余额，但不会被归因到今日/累计。
 
-## 素材
+---
 
-八个状态由插件所有者提供，见 `assets/ATTRIBUTION.md`。
-全部 1024×1024 RGBA，共用同一画布与同一缸体；本插件用**统一裁切** `(74,62,952,962)`
-再编码成 512 宽 WebP，从而让 `girl-sleep` 能直接叠在 `vat-empty` 上（上移 15.55%）。
+## 开源来源与致谢
 
-## 未实现
+这个插件的**角色形象、技术路线和实现手法**都来自开源社区，来源在此逐一说明。
 
-- 多 key 多米缸（逐个勾选 opt-in）。
-- 账本里已存的按日历史没有浏览界面。
-- 素材是静态帧；动画由 CSS 驱动。若后续提供 GIF/序列帧可替换。
+### 1. 角色形象 · 鲸鱼娘 / 大肥鱼
 
-## 安装
+本插件的鲸鱼娘沿用**社区自发形成的去中心化角色**。该角色没有官方标准设定，本项目也不主张任何人设的「正统性」。
+
+- 社区资产库：**[TreapGoGo/deepseek-whale-girl](https://github.com/TreapGoGo/deepseek-whale-girl)**（MIT）
+- 该资产库明确声明：由社区维护，**不代表深度求索公司或其官方立场**
+- 本项目的立绘在设计该库角色设定的基础上，由本项目作者用 AI 图像工具重新生成，随本包以 MIT 授权
+
+### 2. 开发期参考的素材与实现
+
+- **[Sutera-Diffusus/dsh-whale-musume](https://github.com/Sutera-Diffusus/dsh-whale-musume)**（MIT）—— 开发早期曾短暂使用其四张立绘（已全部删除，不再随包分发）；其 `shell.overlay` 挂载方式、素材只读路由的做法是本项目的重要参考
+- **[huangdsa45/dsh_feiyu](https://github.com/huangdsa45/dsh_feiyu)**（MIT）—— 证明了 `shell.overlay` 浮层可以作为桌面宠物式的挂载点
+- **[MeteorNOX/DeepSeek-Balance-Whale-Widget](https://github.com/MeteorNOX/DeepSeek-Balance-Whale-Widget)**（MIT）—— 展示了「余额下降即消耗」的记账思路
+- **[aceice01/dsh-whale-pet](https://github.com/aceice01/dsh-whale-pet)** —— 演示了 Host 侧代理余额接口、前端只拿结果的隔离做法
+
+### 3. 运行平台
+
+- **[DeepSeek Harness](https://deepseek-harness.github.io/deepseek-harness/)** —— 本插件是其生态内的第三方社区插件
+
+### 4. 声 明
+
+**本项目不是 DeepSeek 官方项目**，与深度求索公司无隶属、合作或背书关系，不使用其商标或标识作为自身品牌。
+
+如果你在这些上游项目里发现了有用的东西，也请给它们一个 Star。
+
+---
+
+## 许可
+
+**MIT** —— 代码和美术**整包同许可**，可自由使用、修改、再分发，详见 [LICENSE](LICENSE) 与 [assets/ATTRIBUTION.md](assets/ATTRIBUTION.md)。
+
+---
+
+## 卸载
 
 ```
-plugin_manager install_bundle  target: <本目录绝对路径>
+plugin_manager  remove_bundle  dsh-rice-vat
 ```
 
-**客户端改动需要重启 DSH**（浏览器 bundle 在页面启动时加载）。
+然后重启 DSH。
+
+---
+
+<div align="center">
+
+### 如果这个米缸让你一眼看懂了余额
+
+**给个 Star ⭐ 吧**
+
+它真的会让鲸鱼娘多吃几口米 🍚
+
+[![Star](https://img.shields.io/github/stars/zyzfred/dsh-rice-vat?style=social)](https://github.com/zyzfred/dsh-rice-vat/stargazers)
+[![Fork](https://img.shields.io/github/forks/zyzfred/dsh-rice-vat?style=social)](https://github.com/zyzfred/dsh-rice-vat/fork)
+
+</div>
