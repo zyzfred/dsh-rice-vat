@@ -17,7 +17,15 @@ import { join } from 'node:path'
 
 const ROUTE_PATH = '/api/rice-bowl'
 const PLUGIN_NAME = 'dsh-rice-vat'
-const PLUGIN_VERSION = '1.0.1'
+/** Single source of truth: the manifest, so the reported version cannot drift. */
+const PLUGIN_VERSION = (() => {
+  try {
+    const manifest = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'))
+    return typeof manifest.version === 'string' ? manifest.version : '0.0.0'
+  } catch {
+    return '0.0.0'
+  }
+})()
 
 /**
  * Rice tiers, in CNY. Four discrete artwork states back these:
@@ -324,9 +332,6 @@ export function apply(ctx) {
     if (candidates === undefined) return false
     return candidates.some((name) => existsSync(new URL(name, ASSET_ROOT)))
   }
-
-  /** Every sprite key the Client can request; each gets its own exact route. */
-  const CACHED_ASSET_KEYS = [...ASSETS.keys()]
 
   const hasVatArt = ['vat-overflow', 'vat-full', 'vat-low', 'vat-empty'].every(assetExists)
   const hasGirlArt = ['girl-idle', 'girl-eat', 'girl-low', 'girl-sleep'].every(assetExists)
@@ -746,77 +751,70 @@ export function apply(ctx) {
   }
 
   /**
-   * Node `req`/`res` adapter, used when the installed DSH only accepts the older
-   * `{ handler }` route form (the `{ resource }` form is newer). Same logic, same
-   * responses — only the transport shape differs.
+   * Route transport.
+   *
+   * DSH 0.2.1's webserver only ever calls `route.handler(req, res)`. A `{ resource }`
+   * descriptor is stored happily and then never invoked, so the listener calls
+   * `undefined(req, res)`, throws, and its own catch answers a bare 400 with no body
+   * and no content-type — which is exactly what a broken install looked like.
+   *
+   * So the Node handler form is the only portable choice, and it has to adapt to the
+   * Fetch-style core: `req.url` is a relative path, so it needs a base, and the
+   * Response we build has to be written back onto `res` or the request just hangs.
+   *
+   * This same form works on 0.2.2 as well, so one code path covers both.
    */
   async function nodeHandler(req, res) {
-    let request
     try {
-      const origin = `http://${req.headers.host ?? '127.0.0.1'}`
+      const host = req.headers.host ?? '127.0.0.1'
+      const url = new URL(req.url ?? '/', `http://${host}`)
+
       const headers = new Headers()
       for (const [key, value] of Object.entries(req.headers)) {
         if (typeof value === 'string') headers.set(key, value)
         else if (Array.isArray(value)) headers.set(key, value.join(', '))
       }
-      request = new Request(new URL(req.url ?? '/', origin), { method: req.method ?? 'GET', headers })
-    } catch {
-      res.statusCode = 400
-      res.end('bad-request')
-      return
-    }
 
-    let response
-    try {
-      response = await handle(request, undefined)
-    } catch {
-      res.statusCode = 500
-      res.end('handler-failed')
-      return
-    }
+      const request = new Request(url.toString(), { method: req.method ?? 'GET', headers })
+      const response = await handle(request, undefined)
 
-    const body = Buffer.from(await response.arrayBuffer())
-    for (const [key, value] of response.headers) res.setHeader(key, value)
-    res.statusCode = response.status
-    res.end(body)
-  }
-
-  /**
-   * Register one route, preferring the `resource` form and falling back to the
-   * Node `handler` form on an engine that predates it.
-   */
-  function registerRoute(path) {
-    try {
-      return webServer.register({ kind: 'exact', path, resource: handle })
-    } catch {
-      return webServer.register({ kind: 'exact', path, handler: nodeHandler })
+      const out = Object.fromEntries(response.headers)
+      res.writeHead(response.status, out)
+      if (req.method === 'HEAD') {
+        res.end()
+      } else {
+        res.end(Buffer.from(await response.arrayBuffer()))
+      }
+    } catch (error) {
+      /* The webserver would otherwise swallow this into a bare 400. Make it legible. */
+      try {
+        res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' })
+        res.end(
+          JSON.stringify({
+            ok: false,
+            error: 'handler-failed',
+            message: String(error?.message ?? error),
+          }),
+        )
+      } catch {
+        /* the socket is already gone */
+      }
     }
   }
 
   /*
-   * Every route is registered as EXACT.
+   * One prefix route covers every endpoint and asset.
    *
-   * A single prefix route at `/api/rice-bowl` is ambiguous: the shared `/api`
-   * bridge is itself a prefix, and DSH 0.2.1 does not resolve that collision the
-   * way 0.2.2 does, so the bridge swallowed every request and answered 401.
-   * Exact routes are the highest-priority match in every version, so no ordering
-   * or longest-prefix rule can shadow them.
+   * Prefix matching is not the problem: the reported 400 (not 401) proves the
+   * request reached this route and died on the missing `handler`.
    */
-  const EXACT_ROUTES = [
-    `${ROUTE_PATH}/state`,
-    `${ROUTE_PATH}/pulse`,
-    `${ROUTE_PATH}/ping`,
-    `${ROUTE_PATH}/diag`,
-    `${ROUTE_PATH}/asset/error`,
-    ...CACHED_ASSET_KEYS.map((key) => `${ASSET_PREFIX}${key}.webp`),
-  ]
-
-  ctx.effect(() => {
-    const disposers = EXACT_ROUTES.map((path) => registerRoute(path))
-    return () => {
-      for (const dispose of disposers) dispose()
-    }
-  })
+  ctx.effect(() =>
+    webServer.register({
+      kind: 'prefix',
+      path: ROUTE_PATH,
+      handler: nodeHandler,
+    }),
+  )
 
   /*
    * Hand each authenticated page render a fresh token. The injection is stored as
