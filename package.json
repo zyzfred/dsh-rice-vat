@@ -1,7 +1,7 @@
 {
   "name": "dsh-rice-vat",
-  "version": "1.0.2",
-  "description": "Rice-vat quota dashboard for DeepSeek Harness: account balance as a physical rice level, with a whale-girl companion.",
+  "version": "1.1.0",
+  "description": "Rice-vat quota dashboard for DeepSeek Harness: account-wide balance and spend, with a draggable whale-girl companion.",
   "author": "CyberOldJoey",
   "license": "MIT",
   "type": "module",
@@ -31,13 +31,17 @@
   "files": [
     "LICENSE",
     "index.js",
+    "platform-usage.js",
     "client.js",
     "cordis.patch.yml",
     "locale/*.json",
     "icon.svg",
     "assets/*.webp",
     "assets/ATTRIBUTION.md",
-    "README.md"
+    "README.md",
+    "README.en.md",
+    "docs/card-v1.1.png",
+    "docs/states-v1.1.png"
   ],
   "dsh": {
     "bundle": {

@@ -1,12 +1,13 @@
 /**
- * Client half of the rice-bowl bundle.
+ * Client half of the rice-vat bundle.
  *
- * Renders a docked rice-vat card into the frame-wide overlay layer, anchored over
- * the sidebar foot. It reads one JSON document from the Host route and polls a
- * cheap pulse; it never sees a credential.
+ * The panel is an ambient overlay: a compact rice-grain pill by default, a
+ * character card when expanded. Both are draggable and resizable, remember their
+ * last layout, and sit above the page. `/rice-vat off` hides the visual from the
+ * Host side without touching billing.
  *
- * Artwork is a four-tier vat (overflow / full / low / empty) plus four poses.
- * See ASSETS-SPEC.md and assets/ATTRIBUTION.md.
+ * All visible copy is registered through the Client locale service (zh/en). The
+ * account numbers come from the Host; the Client only formats them.
  */
 
 window.__ModuleLoader__.load({
@@ -14,7 +15,7 @@ window.__ModuleLoader__.load({
   factory(require) {
     const React = require('react')
     const h = React.createElement
-    const { useState, useEffect } = React
+    const { useState, useEffect, useRef, useMemo, useCallback } = React
 
     const STATE_URL = '/api/rice-bowl/state'
     const PULSE_URL = '/api/rice-bowl/pulse'
@@ -22,9 +23,15 @@ window.__ModuleLoader__.load({
     const STATE_MS = 60_000
     const PULSE_MS = 1_500
     const EAT_MS = 4_600
+    const BITE_MS = 2_200
+    const STORE_KEY = 'rice-vat:ui:v2'
+    const MIN_SCALE = 0.75
+    const MAX_SCALE = 1.35
+    const Z_INDEX = 2147483000
+    const NS = 'rice.vat'
 
-    /** Tiers mirror the Host's `tierFor`; artwork exists for each. */
-    const TIERS = ['overflow', 'full', 'low', 'empty']
+    /** Artwork version. Bump whenever assets/ changes; responses are cached for a day. */
+    const ASSET_V = 'v4'
 
     const BOOT_TOKEN =
       typeof window !== 'undefined' && typeof window.__RICE_BOWL_TOKEN__ === 'string'
@@ -35,14 +42,263 @@ window.__ModuleLoader__.load({
         ? { accept: 'application/json' }
         : { accept: 'application/json', 'x-rice-bowl-token': BOOT_TOKEN }
 
-    /**
-     * Artwork version. Asset responses are cached for a day, so this must be bumped
-     * whenever a file under assets/ changes, or the browser keeps the old image.
-     */
-    const ASSET_V = 'v4'
-
     function asset(key) {
       return `${ASSET_BASE}/${key}.webp?v=${ASSET_V}`
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Dictionaries                                                        */
+    /* ------------------------------------------------------------------ */
+
+    const ZH = {
+      title: '米缸',
+      collapse: '收起',
+      expand: '展开米缸',
+      drag: '拖动',
+      dragHint: '拖动卡片或药丸移动；右下角斜纹调整大小。',
+      resize: '调整大小',
+      resetLayout: '重置位置和大小',
+      accountBalance: '账户余额',
+      today: '今日炫米',
+      total: '累积炫米',
+      daysLeft: '还能吃',
+      days: '{n} 天',
+      lessThanDay: '<1 天',
+      overDays: '999+ 天',
+      paid: '本金',
+      bonus: '赠金',
+      details: '详情',
+      hideDetails: '收起',
+      ricePrice: '米价',
+      priceLabel: '米价',
+      peak: '高峰 · 原价',
+      offPeak: '谷时 · 半价',
+      statusFull: '满满',
+      statusOverflow: '溢出来',
+      statusLow: '见底',
+      statusEmpty: '空缸',
+      statusSignedOut: '还没开缸',
+      statusError: '盖着布',
+      statusLoading: '量米中',
+      eating: '吃米中',
+      loading: '正在量米…',
+      signedOutHint: '登录后显示余额',
+      errorHint: '数据没接上 · 重启 DSH 后生效',
+      unavailable: '账号数据暂不可用',
+      emptyHint: '米缸空了 · 她饿睡着了',
+      lowHint: '米缸见底了',
+      stale: '数据延迟',
+      lastUpdated: '上次 {time}',
+      retry: '重试',
+      topUp: '去充值',
+      usageDetails: '用量明细',
+      dataSource: '账号数据 · DeepSeek Platform',
+      lifetimeHint: '账号终身累计',
+      todayHint: '账号今日消耗',
+      daysHint: '按近 7 天日均 {avg} 估算',
+      updated: '更新',
+      updatedAt: '更新于 {time}',
+      peakHours: '工作日 9:00–12:00、14:00–18:00 高峰',
+      localEstimate: '本机估算（仅本应用）',
+      localNote: '账号总额来自 Platform；本机账本仅驱动动画。',
+      version: '版本 {version}',
+      gaugeAria: '米位：余额 {balance}，下限 {low}，满缸 {full}',
+      summaryAria: '账户余额 {balance}，今日炫米 {today}，累积炫米 {total}，还能吃 {days}',
+      pillAria: '展开米缸，余额 {balance}，还能吃 {days}',
+      priceAria: '米价：{price}。{hours}',
+      detailsTitle: '米缸详情',
+    }
+
+    const EN = {
+      title: 'Rice vat',
+      collapse: 'Collapse',
+      expand: 'Expand rice vat',
+      drag: 'Drag',
+      dragHint: 'Drag the card or pill to move; use the corner grip to resize.',
+      resize: 'Resize',
+      resetLayout: 'Reset position and size',
+      accountBalance: 'Account balance',
+      today: "Today's rice",
+      total: 'All-time rice',
+      daysLeft: 'Days left',
+      days: '{n} days',
+      lessThanDay: '<1 day',
+      overDays: '999+ days',
+      paid: 'Paid',
+      bonus: 'Bonus',
+      details: 'Details',
+      hideDetails: 'Hide',
+      ricePrice: 'Rice price',
+      priceLabel: 'Price',
+      peak: 'Peak · Full price',
+      offPeak: 'Off-peak · 50%',
+      statusFull: 'Full',
+      statusOverflow: 'Overflowing',
+      statusLow: 'Low',
+      statusEmpty: 'Empty',
+      statusSignedOut: 'Signed out',
+      statusError: 'Covered',
+      statusLoading: 'Measuring',
+      eating: 'Eating',
+      loading: 'Measuring rice…',
+      signedOutHint: 'Sign in to see your balance',
+      errorHint: 'Not connected · restart DSH',
+      unavailable: 'Account data unavailable',
+      emptyHint: 'The vat is empty · she fell asleep hungry',
+      lowHint: 'The vat is nearly empty',
+      stale: 'Data delayed',
+      lastUpdated: 'Last {time}',
+      retry: 'Retry',
+      topUp: 'Top up',
+      usageDetails: 'Usage details',
+      dataSource: 'Account data · DeepSeek Platform',
+      lifetimeHint: 'Lifetime account total',
+      todayHint: 'Account spend today',
+      daysHint: 'Estimated from the last 7-day average of {avg}',
+      updated: 'Updated',
+      updatedAt: 'Updated {time}',
+      peakHours: 'Weekdays 9:00–12:00 and 14:00–18:00 are peak',
+      localEstimate: 'Local estimate (this app only)',
+      localNote: 'Account totals come from Platform; the local ledger only drives the animation.',
+      version: 'Version {version}',
+      gaugeAria: 'Rice level: balance {balance}, low {low}, full {full}',
+      summaryAria: 'Account balance {balance}; today {today}; all-time {total}; days left {days}',
+      pillAria: 'Expand rice vat; balance {balance}; days left {days}',
+      priceAria: 'Rice price: {price}. {hours}',
+      detailsTitle: 'Rice vat details',
+    }
+
+    function makeFallbackT(dict) {
+      return (key, params) => {
+        let text = dict[key] ?? key
+        if (params && typeof params === 'object') {
+          for (const [name, value] of Object.entries(params)) text = text.replaceAll(`{${name}}`, String(value))
+        }
+        return text
+      }
+    }
+
+    const fallbackT = makeFallbackT(
+      (typeof document !== 'undefined' && String(document.documentElement?.lang ?? '').startsWith('zh'))
+        || (typeof navigator !== 'undefined' && String(navigator.language ?? '').startsWith('zh'))
+        ? ZH
+        : EN,
+    )
+
+    /* ------------------------------------------------------------------ */
+    /* Formatting and state helpers                                        */
+    /* ------------------------------------------------------------------ */
+
+    const clamp = (value, min, max) => Math.max(min, Math.min(max, value))
+
+    function currencySymbol(currency) {
+      if (currency === 'CNY') return '¥'
+      if (currency === 'USD') return '$'
+      return `${currency} `
+    }
+
+    function activeLanguage() {
+      if (typeof document !== 'undefined' && document.documentElement?.lang) return document.documentElement.lang
+      if (typeof navigator !== 'undefined' && navigator.language) return navigator.language
+      return 'en'
+    }
+
+    function formatNumber(value, digits = 2) {
+      if (typeof value !== 'number' || !Number.isFinite(value)) return '—'
+      try {
+        return new Intl.NumberFormat(activeLanguage(), {
+          minimumFractionDigits: digits,
+          maximumFractionDigits: digits,
+        }).format(value)
+      } catch {
+        return value.toFixed(digits)
+      }
+    }
+
+    function formatMoney(value, currency, digits = 2) {
+      if (typeof value !== 'number' || !Number.isFinite(value)) return '—'
+      return `${currencySymbol(currency)}${formatNumber(value, digits)}`
+    }
+
+    function formatSmall(value, currency) {
+      if (typeof value !== 'number' || !Number.isFinite(value)) return '—'
+      if (value > 0 && value < 0.001) return `<${currencySymbol(currency)}0.001`
+      if (Math.abs(value) < 0.1) return formatMoney(value, currency, 3)
+      return formatMoney(value, currency, 2)
+    }
+
+    function formatThreshold(value, currency) {
+      return formatMoney(value, currency, 0)
+    }
+
+    function formatDays(value, t) {
+      if (typeof value !== 'number' || !Number.isFinite(value)) return '—'
+      if (value <= 0) return t('days', { n: 0 })
+      if (value < 1) return t('lessThanDay')
+      if (value > 999) return t('overDays')
+      return t('days', { n: Math.floor(value) })
+    }
+
+    function formatClock(value) {
+      if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return '—'
+      try {
+        return new Intl.DateTimeFormat(activeLanguage(), { hour: '2-digit', minute: '2-digit' }).format(new Date(value))
+      } catch {
+        const date = new Date(value)
+        return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
+      }
+    }
+
+    function openExternal(url) {
+      try {
+        const target = new URL(String(url))
+        const allowed =
+          target.protocol === 'https:' ||
+          (target.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(target.hostname))
+        if (!allowed) return
+        window.open(target.href, '_blank', 'noopener,noreferrer')
+      } catch {
+        /* an invalid account link is ignored */
+      }
+    }
+
+    function readStored() {
+      try {
+        const parsed = JSON.parse(localStorage.getItem(STORE_KEY) ?? 'null')
+        return parsed !== null && typeof parsed === 'object' ? parsed : null
+      } catch {
+        return null
+      }
+    }
+
+    function writeStored(patch) {
+      try {
+        const current = readStored() ?? {}
+        localStorage.setItem(STORE_KEY, JSON.stringify({ ...current, ...patch }))
+      } catch {
+        /* layout memory is best-effort */
+      }
+    }
+
+    function storedPosition(value) {
+      if (value === null || typeof value !== 'object') return null
+      return Number.isFinite(value.x) && Number.isFinite(value.y) ? { x: value.x, y: value.y } : null
+    }
+
+    function useReducedMotion() {
+      const [reduced, setReduced] = useState(
+        () => typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+          && window.matchMedia('(prefers-reduced-motion: reduce)').matches,
+      )
+      useEffect(() => {
+        if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return undefined
+        const query = window.matchMedia('(prefers-reduced-motion: reduce)')
+        const update = () => setReduced(query.matches)
+        update()
+        query.addEventListener?.('change', update)
+        return () => query.removeEventListener?.('change', update)
+      }, [])
+      return reduced
     }
 
     /* ------------------------------------------------------------------ */
@@ -50,56 +306,85 @@ window.__ModuleLoader__.load({
     /* ------------------------------------------------------------------ */
 
     let lastEatAt = 0
-    let eatTimer = null
 
     function useQuota() {
       const [doc, setDoc] = useState(null)
       const [spend, setSpend] = useState(null)
       const [live, setLive] = useState(null)
+      const [visible, setVisible] = useState(true)
       const [failed, setFailed] = useState(false)
+      const [lastOkAt, setLastOkAt] = useState(0)
       const [eating, setEating] = useState(false)
+      const [bite, setBite] = useState(null)
+      const [tick, setTick] = useState(() => Date.now())
+      const retryRef = useRef(null)
+      const eatTimer = useRef(null)
+      const biteTimer = useRef(null)
+
+      const applySpend = useCallback((next) => {
+        if (!next || typeof next !== 'object') return
+        setSpend(next)
+        const marker = next.recentAt
+        if (typeof marker === 'number' && marker > lastEatAt) {
+          lastEatAt = marker
+          setEating(true)
+          const cost = typeof next.recentCny === 'number' ? next.recentCny : 0
+          if (cost > 0) {
+            setBite({ cny: cost, at: Date.now() })
+            if (biteTimer.current !== null) clearTimeout(biteTimer.current)
+            biteTimer.current = setTimeout(() => setBite(null), BITE_MS)
+          }
+          if (eatTimer.current !== null) clearTimeout(eatTimer.current)
+          eatTimer.current = setTimeout(() => setEating(false), EAT_MS)
+        }
+      }, [])
 
       useEffect(() => {
         let alive = true
-
-        fetch('/api/rice-bowl/ping', { cache: 'no-store', headers: AUTH_HEADERS }).catch(() => {})
-
         let retry = null
         let backoff = 3_000
 
         async function loadState() {
           try {
-            const response = await fetch(STATE_URL, {
-              headers: AUTH_HEADERS,
-              cache: 'no-store',
-            })
+            const response = await fetch(STATE_URL, { headers: AUTH_HEADERS, cache: 'no-store' })
             if (!response.ok) throw new Error(`HTTP ${response.status}`)
             const body = await response.json()
             if (!alive) return
             setDoc(body)
-            if (body.spend) setSpend(body.spend)
-            if (body.live) setLive(body.live)
+            setLive(body.live ?? null)
+            applySpend(body.spend)
+            setVisible(body.ui?.visible !== false)
             setFailed(false)
+            setLastOkAt(Date.now())
             backoff = 3_000
+            if (retry !== null) {
+              clearTimeout(retry)
+              retry = null
+            }
           } catch {
             if (!alive) return
             setFailed(true)
-            /* The host half may still be coming up (install without restart, or a
-               plugin row that has not activated). Retry quickly, then back off. */
             if (retry !== null) clearTimeout(retry)
             retry = setTimeout(loadState, backoff)
             backoff = Math.min(backoff * 2, 30_000)
           }
         }
 
-        loadState()
+        retryRef.current = () => {
+          if (retry !== null) {
+            clearTimeout(retry)
+            retry = null
+          }
+          void loadState()
+        }
+        void loadState()
         const timer = setInterval(loadState, STATE_MS)
         return () => {
           alive = false
           clearInterval(timer)
           if (retry !== null) clearTimeout(retry)
         }
-      }, [])
+      }, [applySpend])
 
       useEffect(() => {
         let alive = true
@@ -110,86 +395,99 @@ window.__ModuleLoader__.load({
             if (!response.ok) return
             const body = await response.json()
             if (!alive) return
-            if (body.spend) setSpend(body.spend)
-            if (body.live) setLive(body.live)
-
-            const marker = body.spend?.recentAt
-            if (typeof marker === 'number' && marker > lastEatAt) {
-              lastEatAt = marker
-              setEating(true)
-              if (eatTimer !== null) clearTimeout(eatTimer)
-              eatTimer = setTimeout(() => setEating(false), EAT_MS)
-            }
+            setSpend((current) => body.spend ?? current)
+            if (body.spend !== undefined) applySpend(body.spend)
+            setLive(body.live ?? null)
+            setVisible(body.ui?.visible !== false)
+            setLastOkAt(Date.now())
           } catch {
-            /* a missed pulse is not worth surfacing */
+            /* a missed pulse is not worth surfacing; the stale clock handles it */
           }
         }
 
-        pulse()
+        void pulse()
         const timer = setInterval(pulse, PULSE_MS)
         return () => {
           alive = false
           clearInterval(timer)
         }
+      }, [applySpend])
+
+      useEffect(() => {
+        const timer = setInterval(() => setTick(Date.now()), 5_000)
+        return () => clearInterval(timer)
       }, [])
 
-      return { doc, spend, live, failed, eating }
+      useEffect(
+        () => () => {
+          if (eatTimer.current !== null) clearTimeout(eatTimer.current)
+          if (biteTimer.current !== null) clearTimeout(biteTimer.current)
+        },
+        [],
+      )
+
+      return {
+        doc,
+        spend,
+        live,
+        visible,
+        failed,
+        lastOkAt,
+        eating,
+        bite,
+        tick,
+        retry: () => retryRef.current?.(),
+      }
     }
 
     /* ------------------------------------------------------------------ */
     /* Artwork                                                             */
     /* ------------------------------------------------------------------ */
 
+    const TIERS = ['low', 'overflow', 'full']
+
     /**
-     * Vat rendering.
-     *
-     * `overflow` / `low` / `empty` use the painted frames. The wide middle band
-     * (¥6–¥100) has no painted frame, so it composites the empty vat with the
-     * package's rice-surface overlay, masked by the vat's opening and shifted down
-     * as the balance falls — a continuous rice level with zero extra artwork.
+     * One stable vat composition. The empty body is always underneath; the tier
+     * layers crossfade over it, and the continuous rice surface is a separate
+     * masked layer. This removes the hard DOM swap at ¥6 and ¥100.
      */
-    function Vat({ tier, fill, continuous }) {
+    function Vat({ tier, fill, continuous, available }) {
       const [failed, setFailed] = useState(0)
       const broken = failed >= 2
       const bust = failed === 1 ? '&r=1' : ''
       const fail = () => setFailed((current) => current + 1)
-      if (broken === true) return h(VatFallback, { tier })
+      if (!available || broken) return h(VatFallback, { tier })
 
-      if (continuous === true && tier === 'full' && typeof fill === 'number') {
-        const t = Math.max(0, Math.min(1, fill))
-        const shift = Math.round((1 - t) * 1905) / 100 /* 19.05% = opening height */
-        return h(
-          'div',
-          { className: 'rb-vat' },
-          h('img', {
-            className: 'rb-vat__layer is-on',
-            src: asset('vat-empty') + bust,
-            alt: '',
-            draggable: false,
-            onError: fail,
-          }),
-          h(
-            'div',
-            { className: 'rb-vat__rice-clip' },
-            h('img', {
-              className: 'rb-vat__rice',
-              src: asset('vat-rice-overlay') + bust,
-              alt: '',
-              draggable: false,
-              onError: fail,
-              style: { transform: `translateY(${shift}%)` },
-            }),
-          ),
-        )
-      }
+      const riceFill = clamp(Number.isFinite(fill) ? fill : 0, 0.05, 1)
+      const shift = Math.round((1 - riceFill) * 1905) / 100
+      const showRice = continuous === true && tier === 'full'
 
       return h(
         'div',
         { className: 'rb-vat' },
+        h('img', {
+          className: 'rb-vat__base',
+          src: asset('vat-empty') + bust,
+          alt: '',
+          draggable: false,
+          onError: fail,
+        }),
+        h(
+          'div',
+          { className: `rb-vat__rice-clip${showRice ? ' is-on' : ''}`, 'aria-hidden': true },
+          h('img', {
+            className: 'rb-vat__rice',
+            src: asset('vat-rice-overlay') + bust,
+            alt: '',
+            draggable: false,
+            onError: fail,
+            style: { transform: `translateY(${shift}%)` },
+          }),
+        ),
         ...TIERS.map((name) =>
           h('img', {
             key: name,
-            className: `rb-vat__layer rb-vat__layer--${name}${name === tier ? ' is-on' : ''}`,
+            className: `rb-vat__layer rb-vat__layer--${name}${tier === name && !showRice ? ' is-on' : ''}`,
             src: asset(`vat-${name}`) + bust,
             alt: '',
             draggable: false,
@@ -199,21 +497,7 @@ window.__ModuleLoader__.load({
       )
     }
 
-    /**
-     * Grains thrown out of the bowl while she eats.
-     *
-     * Anchored to the bowl's rice surface inside `girl-eat`, measured on the
-     * shared 512×525 canvas: the rice band sits around x 24–77%, y 36–44%.
-     */
-    function BowlSplash() {
-      return h(
-        'span',
-        { className: 'rb-splash', 'aria-hidden': true },
-        [0, 1, 2, 3, 4, 5, 6].map((i) => h('i', { key: i, className: `rb-splash__grain rb-splash__grain--${i}` })),
-      )
-    }
-
-    /** Hand-authored SVG mascot, used when the sprite for this state is missing. */
+    /** Hand-authored SVG mascot, used only when the sprite for this state is missing. */
     function WhaleGirlFallback({ mood }) {
       const empty = mood === 'empty'
       return h(
@@ -232,34 +516,18 @@ window.__ModuleLoader__.load({
           d: 'M30 74 q18 -8 36 0 q6 13 2 26 q-20 6 -40 0 q-4 -13 2 -26 z',
           fill: '#2b62cf',
         }),
-        empty
-          ? h('text', { x: 78, y: 32, fontSize: 12, fill: '#7fb6e8', fontWeight: 700 }, 'z')
-          : null,
+        empty ? h('text', { x: 78, y: 32, fontSize: 12, fill: '#7fb6e8', fontWeight: 700 }, 'z') : null,
       )
     }
 
-    const GIRL_FOR = {
-      idle: 'girl-idle',
-      eat: 'girl-eat',
-      low: 'girl-low',
-      sleep: 'girl-sleep',
-    }
-
-    /** Picks the pose from the mood and the live eating flag. */
-    /** A pose that needs a plain still image when its animated form will not decode. */
     const GIRL_STILL = { 'girl-eat': 'girl-eat-still' }
 
     /**
-     * Pose rendering with a retry chain instead of a one-shot latch:
-     *
-     *   0 animated        1 animated + cache buster        2 static still        3 SVG
-     *
-     * A single transient failure (startup race, aborted request) used to disable the
-     * sprite for the whole session; now it costs one retry and then falls back to
-     * the still frame before anything hand-drawn appears.
+     * Pose with a retry chain and a soft fade on every change:
+     *   0 animated → 1 cache-busted → 2 still frame → 3 SVG fallback.
      */
-    function Girl({ mood, eating, available }) {
-      const name = eating ? GIRL_FOR.eat : mood === 'empty' ? GIRL_FOR.sleep : mood === 'low' ? GIRL_FOR.low : GIRL_FOR.idle
+    function Girl({ mood, eating, available, reduced }) {
+      const name = eating ? 'girl-eat' : mood === 'empty' ? 'girl-sleep' : mood === 'low' ? 'girl-low' : 'girl-idle'
       const still = GIRL_STILL[name]
       const [step, setStep] = useState(0)
 
@@ -267,26 +535,81 @@ window.__ModuleLoader__.load({
         setStep(0)
       }, [name])
 
+      if (available !== true || step >= 3) return h(WhaleGirlFallback, { mood: mood === 'empty' ? 'empty' : 'ok' })
+
+      const source = step >= 2 && still !== undefined ? still : name
+      if (source === undefined) return h(WhaleGirlFallback, { mood })
+      const useStill = reduced === true && name === 'girl-eat'
+      const resolved = useStill ? still ?? source : source
+      const src = step === 1 ? `${asset(resolved)}&r=1` : asset(resolved)
       const cls = eating ? 'eating' : mood === 'empty' ? 'empty' : mood === 'low' ? 'worried' : 'idle'
-      const fallback = () => h(WhaleGirlFallback, { mood })
 
-      if (available !== true || step >= 3) return fallback()
-
-      const source = step >= 2 ? still : name
-      if (source === undefined) return fallback()
-
-      const src = step === 1 ? `${asset(source)}&r=1` : asset(source)
-      return h('img', {
-        key: `${source}:${step}`,
-        className: `rb-girl rb-girl--${cls}`,
-        src,
-        alt: '鲸鱼娘',
-        draggable: false,
-        onError: () => setStep((current) => (current >= 3 ? 3 : current + 1)),
-      })
+      return h(
+        'div',
+        { className: 'rb-girl-fade', key: `${src}:${step}` },
+        h('img', {
+          className: `rb-girl rb-girl--${cls}`,
+          src,
+          alt: '',
+          'aria-hidden': true,
+          draggable: false,
+          onError: () => setStep((current) => (current >= 3 ? 3 : current + 1)),
+        }),
+      )
     }
 
-    /** Plain SVG vat, used only when the vat artwork is missing or fails to load. */
+    function BowlSplash({ reduced }) {
+      if (reduced === true) return null
+      return h(
+        'span',
+        { className: 'rb-splash', 'aria-hidden': true },
+        [0, 1, 2].map((index) => h('i', { key: index, className: `rb-splash__grain rb-splash__grain--${index}` })),
+      )
+    }
+
+    /**
+     * Fixed stage with two crossfading layouts. The empty vat keeps the same
+     * 110×113 footprint as the normal vat, so crossing ¥0 no longer scales it.
+     */
+    function Scene({ tier, mood, eating, girlArt, vatArt, continuousArt, fill, showEmpty, reduced, biteLabel, biteAt }) {
+      const empty = showEmpty === true
+      const normalVat = h(Vat, { tier, fill, continuous: continuousArt, available: vatArt })
+      const emptyVat = h(Vat, { tier: 'empty', fill: 0, continuous: false, available: vatArt })
+
+      return h(
+        'div',
+        { className: 'rb-stage' },
+        h(
+          'div',
+          { className: `rb-scene${empty ? '' : ' is-on'}`, 'aria-hidden': true },
+          h(
+            'div',
+            { className: 'rb-vat-box' },
+            normalVat,
+            biteLabel !== null
+              ? h('span', { key: biteAt, className: 'rb-bite-float' }, biteLabel)
+              : null,
+          ),
+          h(
+            'div',
+            { className: 'rb-girl-box' },
+            h(Girl, { mood, eating, available: girlArt, reduced }),
+            eating ? h(BowlSplash, { reduced }) : null,
+          ),
+        ),
+        h(
+          'div',
+          { className: `rb-scene rb-scene--empty${empty ? ' is-on' : ''}`, 'aria-hidden': true },
+          h(
+            'div',
+            { className: 'rb-drape-box' },
+            h('div', { className: 'rb-vat-box rb-vat-box--drape' }, emptyVat),
+            h(Girl, { mood: 'empty', eating: false, available: girlArt, reduced }),
+          ),
+        ),
+      )
+    }
+
     function VatFallback({ tier }) {
       const fill = tier === 'overflow' ? 1 : tier === 'full' ? 0.8 : tier === 'low' ? 0.07 : 0
       const travel = (1 - fill) * 78
@@ -310,44 +633,74 @@ window.__ModuleLoader__.load({
       )
     }
 
+    /* ------------------------------------------------------------------ */
+    /* Layout shell                                                         */
+    /* ------------------------------------------------------------------ */
+
     /**
-     * Stage layout.
-     *
-     * Normally the vat and the girl stand side by side. When the vat is empty she
-     * sleeps ON the vat: both sprites share one canvas registration, so she only
-     * needs a fixed lift (see ASSETS-SPEC / manifest) to rest on the rim.
+     * The DSH window chrome (macOS traffic lights / the Windows caption row /
+     * the shell leading seat) owns the very top strip and does not forward
+     * pointer events to the overlay. A 28px pill dropped at y=8 is therefore
+     * completely ungrabbable: it sits inside the window drag region. Keep the
+     * whole widget below that strip. The frame publishes the clearance; fall
+     * back to the macOS 48px strip + 8px gap for web/older shells, and let
+     * fullscreen reclaim the space.
      */
-    function Scene({ tier, mood, eating, girlArt, vatArt, continuousArt, fill }) {
-      const vat = vatArt === true ? h(Vat, { tier, fill, continuous: continuousArt }) : h(VatFallback, { tier })
-
-      if (mood === 'empty' && !eating) {
-        return h(
-          'div',
-          { className: 'rb-scene rb-scene--empty' },
-          h(
-            'div',
-            { className: 'rb-drape-box' },
-            h(
-              'div',
-              { className: 'rb-vat-box rb-vat-box--drape' },
-              vatArt === true ? h(Vat, { tier: 'empty', fill: 0, continuous: false }) : vat,
-            ),
-            h(Girl, { mood: 'empty', eating: false, available: girlArt }),
-          ),
-        )
+    let safeInsetCache = { at: 0, value: 56 }
+    function topSafeInset() {
+      if (typeof window === 'undefined' || typeof document === 'undefined') return 8
+      const now = Date.now()
+      if (now - safeInsetCache.at < 1_000) return safeInsetCache.value
+      const html = document.documentElement
+      if (html.hasAttribute('data-fullscreen')) {
+        safeInsetCache = { at: now, value: 8 }
+        return 8
       }
+      let clearance = Number.NaN
+      try {
+        const style = getComputedStyle(html)
+        clearance = Number.parseFloat(style.getPropertyValue('--dsh-frame-top-clearance'))
+        if (!Number.isFinite(clearance)) clearance = Number.parseFloat(style.getPropertyValue('--dsh-windows-titlebar-height'))
+      } catch {
+        /* non-browser or restricted style access */
+      }
+      const value = Number.isFinite(clearance) && clearance > 0 ? Math.ceil(clearance + 8) : 56
+      safeInsetCache = { at: now, value }
+      return value
+    }
 
-      return h(
-        'div',
-        { className: 'rb-scene' },
-        h('div', { className: 'rb-vat-box' }, vat),
-        h(
-          'div',
-          { className: 'rb-girl-box' },
-          h(Girl, { mood, eating, available: girlArt }),
-          eating ? h(BowlSplash) : null,
-        ),
-      )
+    function clampPosition(x, y, scale, element) {
+      if (typeof window === 'undefined') return { x, y }
+      const width = (element?.offsetWidth ?? 236) * scale
+      const height = (element?.offsetHeight ?? 260) * scale
+      const minY = topSafeInset()
+      const maxX = Math.max(8, window.innerWidth - width - 8)
+      const maxY = Math.max(minY, window.innerHeight - height - 8)
+      return { x: clamp(x, 8, maxX), y: clamp(y, minY, maxY) }
+    }
+
+    function ResizeGrip({ t, onPointerDown, onPointerMove, onPointerUp, onKeyDown, onReset }) {
+      return h('div', {
+        className: 'rb-resize',
+        role: 'button',
+        tabIndex: 0,
+        title: t('resize'),
+        'aria-label': t('resize'),
+        'data-no-drag': true,
+        onPointerDown,
+        onPointerMove,
+        onPointerUp,
+        onPointerCancel: onPointerUp,
+        onKeyDown,
+        onDoubleClick: onReset,
+      })
+    }
+
+    function Dot({ tone, eating, stale }) {
+      return h('i', {
+        className: `rb-dot rb-dot--${tone}${eating ? ' is-eating' : ''}${stale ? ' is-stale' : ''}`,
+        'aria-hidden': true,
+      })
     }
 
     /* ------------------------------------------------------------------ */
@@ -357,15 +710,6 @@ window.__ModuleLoader__.load({
     const FULL_AT = 100
     const LOW_AT = 6
 
-    function moodFor(primary, signIn) {
-      if (!signIn) return 'empty'
-      if (primary === null || primary === undefined) return 'empty'
-      if (primary.balance <= 0) return 'empty'
-      if (primary.balance < LOW_AT) return 'low'
-      if (primary.balance <= FULL_AT) return 'ok'
-      return 'full'
-    }
-
     function tierFor(balance) {
       if (typeof balance !== 'number' || !Number.isFinite(balance) || balance <= 0) return 'empty'
       if (balance <= LOW_AT) return 'low'
@@ -373,356 +717,950 @@ window.__ModuleLoader__.load({
       return 'overflow'
     }
 
-    /**
-     * One-line hint for the sign plate: what the VAT currently shows, not what the
-     * girl is doing. `fill` only refines the wide 6–100 band so the words stay true
-     * as the rice drains.
-     */
-    function hintFor({ loaded, failed, eating, stale, mood, tier, fill }) {
-      if (loaded === false) return failed === true ? '读取失败' : '—'
-      if (eating) return '正在炫米...'
-      if (stale === true) return '信号不稳'
-      if (mood === 'empty') return '没有米了，晕碳中'
-      if (tier === 'overflow') return '米缸溢出来了'
-      if (mood === 'low') return '米缸见底了'
-      if (fill >= 0.7) return '米缸满满'
-      if (fill >= 0.3) return '米缸过半'
-      return '米缸见底了'
-    }
+    function RiceBowlCard({ t }) {
+      const tr = typeof t === 'function' ? t : fallbackT
+      const reduced = useReducedMotion()
+      const { doc, spend, live, visible, failed, lastOkAt, eating, bite, tick, retry } = useQuota()
 
-    function formatMoney(value) {
-      if (typeof value !== 'number' || !Number.isFinite(value)) return '—'
-      return value.toFixed(2)
-    }
+      const stored = useMemo(readStored, [])
+      const [collapsed, setCollapsed] = useState(stored?.collapsed !== false)
+      const [pos, setPos] = useState(() => storedPosition(stored?.pos))
+      const [scale, setScale] = useState(() => clamp(Number.isFinite(stored?.scale) ? stored.scale : 1, MIN_SCALE, MAX_SCALE))
+      const [detailsOpen, setDetailsOpen] = useState(false)
 
-    function formatSmall(value) {
-      if (typeof value !== 'number' || !Number.isFinite(value)) return '—'
-      if (value > 0 && value < 0.01) return '<0.01'
-      return value.toFixed(2)
-    }
+      const rootRef = useRef(null)
+      const posRef = useRef(pos)
+      const scaleRef = useRef(scale)
+      const dragRef = useRef(null)
+      const resizeRef = useRef(null)
+      const suppressClickRef = useRef(false)
 
-    const styles = {
-      root: { position: 'fixed', left: 8, bottom: 56, width: 236, pointerEvents: 'auto', zIndex: 40 },
-    }
+      useEffect(() => {
+        posRef.current = pos
+      }, [pos])
 
-    function RiceBowlCard() {
-      const { doc, spend, live, failed, eating } = useQuota()
-      const [collapsed, setCollapsed] = useState(false)
+      useEffect(() => {
+        scaleRef.current = scale
+      }, [scale])
+
+      /* First placement: bottom-left, clear of the sidebar foot. */
+      useEffect(() => {
+        if (pos !== null || doc === null) return undefined
+        let second = 0
+        const first = requestAnimationFrame(() => {
+          second = requestAnimationFrame(() => {
+            const element = rootRef.current
+            if (!element) return
+            const rect = element.getBoundingClientRect()
+            setPos(clampPosition(12, window.innerHeight - rect.height - 56, scale, element))
+          })
+        })
+        return () => {
+          cancelAnimationFrame(first)
+          if (second !== 0) cancelAnimationFrame(second)
+        }
+      }, [doc, pos, scale, visible])
+
+      /* Keep the widget inside the viewport after expand/resize. */
+      useEffect(() => {
+        if (pos === null) return undefined
+        const frame = requestAnimationFrame(() => {
+          setPos((current) => (current === null ? current : clampPosition(current.x, current.y, scale, rootRef.current)))
+        })
+        return () => cancelAnimationFrame(frame)
+      }, [doc, collapsed, detailsOpen, scale, visible])
+
+      useEffect(() => {
+        const onResize = () => {
+          setPos((current) => (current === null ? current : clampPosition(current.x, current.y, scale, rootRef.current)))
+        }
+        window.addEventListener('resize', onResize)
+        return () => window.removeEventListener('resize', onResize)
+      }, [scale])
+
+      useEffect(() => {
+        writeStored({ collapsed })
+      }, [collapsed])
+
+      const persistLayout = useCallback((patch) => writeStored(patch), [])
+
+      function beginDrag(event) {
+        if (event.button !== undefined && event.button !== 0 && event.pointerType === 'mouse') return
+        if (event.target?.closest?.('button, a, [data-no-drag]')) return
+        const element = rootRef.current
+        if (!element) return
+        const rect = element.getBoundingClientRect()
+        dragRef.current = {
+          pointerId: event.pointerId,
+          dx: event.clientX - rect.left,
+          dy: event.clientY - rect.top,
+          startX: event.clientX,
+          startY: event.clientY,
+          moved: false,
+        }
+        event.currentTarget.setPointerCapture?.(event.pointerId)
+        event.preventDefault()
+      }
+
+      function moveDrag(event) {
+        const drag = dragRef.current
+        if (!drag || drag.pointerId !== event.pointerId) return
+        if (!drag.moved && Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < 3) return
+        drag.moved = true
+        const next = clampPosition(event.clientX - drag.dx, event.clientY - drag.dy, scale, rootRef.current)
+        posRef.current = next
+        setPos(next)
+      }
+
+      function endDrag(event) {
+        const drag = dragRef.current
+        if (!drag) return
+        dragRef.current = null
+        try {
+          event.currentTarget.releasePointerCapture?.(event.pointerId)
+        } catch {
+          /* capture may already be gone */
+        }
+        if (drag.moved) {
+          suppressClickRef.current = true
+          setTimeout(() => {
+            suppressClickRef.current = false
+          }, 250)
+          if (posRef.current !== null) persistLayout({ pos: posRef.current })
+        } else if (collapsed) {
+          /* Expand on a tap/click release. Doing it here works even if the
+             platform suppresses the compatibility click after pointer capture. */
+          setCollapsed(false)
+          setDetailsOpen(false)
+        }
+      }
+
+      function beginResize(event) {
+        event.stopPropagation()
+        event.preventDefault()
+        const element = rootRef.current
+        if (!element) return
+        const rect = element.getBoundingClientRect()
+        resizeRef.current = {
+          pointerId: event.pointerId,
+          startScale: scale,
+          anchorX: rect.left,
+          anchorY: rect.top,
+          startDistance: Math.max(24, Math.hypot(event.clientX - rect.left, event.clientY - rect.top)),
+        }
+        event.currentTarget.setPointerCapture?.(event.pointerId)
+      }
+
+      function moveResize(event) {
+        const resize = resizeRef.current
+        if (!resize || resize.pointerId !== event.pointerId) return
+        const distance = Math.hypot(event.clientX - resize.anchorX, event.clientY - resize.anchorY)
+        const next = clamp(resize.startScale * (distance / resize.startDistance), MIN_SCALE, MAX_SCALE)
+        scaleRef.current = next
+        setScale(next)
+      }
+
+      function endResize(event) {
+        const resize = resizeRef.current
+        if (!resize) return
+        resizeRef.current = null
+        try {
+          event.currentTarget.releasePointerCapture?.(event.pointerId)
+        } catch {
+          /* capture may already be gone */
+        }
+        persistLayout({ scale: scaleRef.current })
+      }
+
+      function resizeKey(event) {
+        const step = event.shiftKey ? 0.1 : 0.05
+        if (!['ArrowUp', 'ArrowRight', 'ArrowDown', 'ArrowLeft'].includes(event.key)) return
+        event.preventDefault()
+        const next = clamp(
+          scale + (event.key === 'ArrowUp' || event.key === 'ArrowRight' ? step : -step),
+          MIN_SCALE,
+          MAX_SCALE,
+        )
+        setScale(next)
+        persistLayout({ scale: next })
+      }
+
+      function resetLayout() {
+        setScale(1)
+        setPos(null)
+        persistLayout({ scale: 1, pos: null })
+      }
+
+      function expandPill() {
+        if (suppressClickRef.current) {
+          suppressClickRef.current = false
+          return
+        }
+        setCollapsed(false)
+        setDetailsOpen(false)
+      }
+
+      function pillKeyDown(event) {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault()
+          setCollapsed(false)
+        }
+      }
 
       const loaded = doc !== null
-      const signIn = loaded && doc.signedIn === true
+      const signedIn = loaded && doc.signedIn === true
       const primary = doc?.primary ?? null
-      /* Before the first state arrives, assume the bundled art exists and show a
-         neutral scene: a fallback flash during loading is worse than a brief blank. */
-      const mood = loaded ? moodFor(primary, signIn) : 'ok'
-      const today = spend?.today
-      const total = spend?.total
-
+      const links = doc?.links ?? null
+      const fullAt = Number(doc?.thresholds?.full) || FULL_AT
+      const lowAt = Number(doc?.thresholds?.low) || LOW_AT
+      const art = loaded ? doc.art ?? {} : { vat: true, girl: true, continuous: true }
       const liveNow = live ?? doc?.live ?? null
       const shownBalance =
         typeof liveNow?.balance === 'number' ? liveNow.balance : primary === null ? null : primary.balance
       const tier =
-        typeof liveNow?.tier === 'string' ? liveNow.tier : loaded ? tierFor(shownBalance) : 'full'
-      const girlArt = loaded ? doc.art?.girl === true : true
-      const continuousArt = loaded ? doc.art?.continuous === true : true
-      const vatArt = loaded ? doc.art?.vat === true : true
-      const fill =
-        shownBalance === null ? 1 : Math.max(0, Math.min(1, (shownBalance - LOW_AT) / (FULL_AT - LOW_AT)))
+        typeof liveNow?.tier === 'string' ? liveNow.tier : shownBalance === null ? 'empty' : tierFor(shownBalance)
+      const currency = primary?.currency ?? spend?.currency ?? 'CNY'
+      const ratio =
+        shownBalance === null ? 0 : clamp((shownBalance - lowAt) / Math.max(0.01, fullAt - lowAt), 0, 1)
+      const riceFill = shownBalance !== null && shownBalance > 0 ? 0.05 + ratio * 0.95 : 0
+      const stale =
+        loaded &&
+        signedIn &&
+        primary !== null &&
+        (doc?.stale === true || spend?.stale === true || failed === true || (lastOkAt > 0 && tick - lastOkAt > 30_000))
+      const balanceUnavailable = signedIn && primary === null
+      const signedOut = loaded && !signedIn
+      const notReady = !loaded && failed
+      const active = signedIn && primary !== null
+      const status = notReady || balanceUnavailable
+        ? 'error'
+        : signedOut
+          ? 'signedOut'
+          : shownBalance === null
+            ? 'error'
+            : shownBalance <= 0
+              ? 'empty'
+              : shownBalance < lowAt
+                ? 'low'
+                : shownBalance > fullAt
+                  ? 'overflow'
+                  : 'full'
+      const statusKind = status === 'signedOut' || status === 'error' ? 'muted' : status
+      const statusText = {
+        full: tr('statusFull'),
+        overflow: tr('statusOverflow'),
+        low: tr('statusLow'),
+        empty: tr('statusEmpty'),
+        signedOut: tr('statusSignedOut'),
+        error: tr('statusError'),
+      }[status]
+      const today = active && spend?.source === 'platform' ? spend.today : null
+      const total = active && spend?.source === 'platform' ? spend.total : null
+      const average = active && spend?.source === 'platform' ? spend.averageDaily : null
+      const daysLeft =
+        typeof shownBalance === 'number' && typeof average === 'number' && average > 0
+          ? Math.floor(shownBalance / average)
+          : null
+      const showEmpty = status === 'empty' && !eating
+      const showStats = active
+      const showGauge = active && shownBalance !== null
+      const statusLabel = statusText
+      const updatedAt = spend?.updatedAt ?? doc?.now ?? null
+      const periodLabel = spend?.period === 'offPeak' ? tr('offPeak') : tr('peak')
+
+      const rootStyle = {
+        position: 'fixed',
+        zIndex: Z_INDEX,
+        left: pos === null ? 12 : pos.x,
+        top: pos === null ? undefined : pos.y,
+        bottom: pos === null ? 56 : undefined,
+        pointerEvents: 'none',
+      }
+      const shellStyle = {
+        transform: `scale(${scale})`,
+        transformOrigin: 'top left',
+        pointerEvents: 'auto',
+      }
+
+      if (!visible) return null
+      if (!loaded && !failed) return null
+
+      const grip = h(ResizeGrip, {
+        t: tr,
+        onPointerDown: beginResize,
+        onPointerMove: moveResize,
+        onPointerUp: endResize,
+        onKeyDown: resizeKey,
+        onReset: () => {
+          setScale(1)
+          persistLayout({ scale: 1 })
+        },
+      })
 
       if (collapsed) {
+        const pillDays = daysLeft === null ? '—' : formatDays(daysLeft, tr)
+        const pillLabel = tr('pillAria', {
+          balance: formatMoney(shownBalance, currency),
+          days: pillDays,
+        })
         return h(
           'div',
-          { className: 'rb-root rb-root--collapsed', style: styles.root },
+          { ref: rootRef, className: 'rb-root', style: rootStyle },
           h('style', null, CSS),
           h(
-            'button',
-            { type: 'button', className: 'rb-pill', title: '展开米缸', onClick: () => setCollapsed(false) },
-            h('span', { className: `rb-pill__grain${eating ? ' rb-pill__grain--eat' : ''}` }),
+            'div',
+            { className: 'rb-shell', style: shellStyle },
             h(
-              'span',
-              { className: 'rb-pill__amount' },
-              signIn && shownBalance !== null ? `¥${formatMoney(shownBalance)}` : '—',
+              'div',
+              {
+                className: `rb-pill${stale ? ' is-stale' : ''}${eating ? ' is-eating' : ''}`,
+                role: 'button',
+                tabIndex: 0,
+                title: pillLabel,
+                'aria-label': pillLabel,
+                onClick: expandPill,
+                onKeyDown: pillKeyDown,
+                onPointerDown: beginDrag,
+                onPointerMove: moveDrag,
+                onPointerUp: endDrag,
+                onPointerCancel: endDrag,
+              },
+              h('span', {
+                className: `rb-pill__grain rb-pill__grain--${statusKind}${eating ? ' is-eating' : ''}`,
+                'aria-hidden': true,
+              }),
+              h(
+                'span',
+                { className: 'rb-pill__amount' },
+                signedIn && shownBalance !== null ? formatMoney(shownBalance, currency) : '—',
+              ),
+              h('span', { className: 'rb-pill__days' }, pillDays),
+              stale ? h('i', { className: 'rb-pill__dot', 'aria-hidden': true }) : null,
             ),
+            grip,
           ),
         )
       }
 
+      const errorish = notReady || signedOut || balanceUnavailable
+      const subText = notReady
+        ? tr('errorHint')
+        : balanceUnavailable
+          ? tr('unavailable')
+          : signedOut
+            ? tr('signedOutHint')
+            : stale
+              ? `${tr('stale')} · ${tr('lastUpdated', { time: formatClock(updatedAt) })}`
+              : status === 'empty'
+                ? tr('emptyHint')
+                : status === 'low'
+                  ? tr('lowHint')
+                  : active && spend?.source !== 'platform'
+                    ? tr('unavailable')
+                    : null
+
       return h(
         'div',
-        { className: 'rb-root', style: styles.root },
+        { ref: rootRef, className: 'rb-root', style: rootStyle },
         h('style', null, CSS),
         h(
           'div',
-          { className: `rb-card${eating ? ' rb-card--eating' : ''}` },
+          { className: 'rb-shell', style: shellStyle },
           h(
             'div',
-            { className: 'rb-head' },
-            h('span', { className: 'rb-title' }, '米缸'),
-            h(
-              'button',
-              { type: 'button', className: 'rb-collapse', title: '收起', onClick: () => setCollapsed(true) },
-              '—',
-            ),
-          ),
-          h(Scene, { tier, mood, eating, girlArt, vatArt, continuousArt, fill }),
-          h(
-            'div',
-            { className: 'rb-amount' },
-            signIn && shownBalance !== null
-              ? [
-                  h('span', { key: 'c', className: 'rb-amount__currency' }, primary?.currency === 'USD' ? '$' : '¥'),
-                  h('span', { key: 'v', className: 'rb-amount__value' }, formatMoney(shownBalance)),
-                ]
-              : h('span', { key: 'n', className: 'rb-amount__value rb-amount__value--dim' }, '—'),
-          ),
-          h(
-            'div',
-            { className: 'rb-sub' },
-            !loaded
-              ? failed
-                ? '插件未就绪 · 请重启 DSH'
-                : '正在读数…'
-              : !signIn
-                ? failed
-                  ? '面板数据读取失败'
-                  : '未登录 DeepSeek 账户'
-              : primary
-                ? `充值 ${formatMoney(primary.recharge)} · 赠金 ${formatMoney(primary.bonus)}`
-                : '余额不可用',
-          ),
-          h(
-            'div',
-            { className: 'rb-stats' },
+            {
+              className: `rb-card${errorish ? ' is-error' : ''}${stale ? ' is-stale' : ''}${eating ? ' is-eating' : ''}`,
+              role: 'region',
+              'aria-label': tr('title'),
+              onPointerDown: beginDrag,
+              onPointerMove: moveDrag,
+              onPointerUp: endDrag,
+              onPointerCancel: endDrag,
+            },
             h(
               'div',
-              { className: 'rb-stat' },
-              h('span', { className: 'rb-stat__label' }, '今日炫米'),
-              h('span', { className: 'rb-stat__value' }, typeof today === 'number' ? `¥${formatSmall(today)}` : '—'),
-            ),
-            h(
-              'div',
-              { className: 'rb-stat' },
-              h('span', { className: 'rb-stat__label' }, '累计炫米'),
-              h('span', { className: 'rb-stat__value' }, typeof total === 'number' ? `¥${formatSmall(total)}` : '—'),
-            ),
-          ),
-          h(
-            'div',
-            { className: 'rb-board-row' },
-            h(
-              'div',
-              { className: 'rb-board-slot' },
+              {
+                className: 'rb-head',
+                title: tr('drag'),
+              },
+              h('span', { className: 'rb-title' }, tr('title')),
               h(
-                'div',
-                { className: `rb-board${spend?.period === 'offPeak' ? ' rb-board--sale' : ''}` },
-                h('span', { className: 'rb-board__ruffle' }),
+                'span',
+                { className: 'rb-status' },
+                h(Dot, { tone: statusKind, eating, stale }),
+                h('span', null, statusLabel),
+              ),
+              h(
+                'button',
+                {
+                  type: 'button',
+                  className: 'rb-chev',
+                  title: tr('collapse'),
+                  'aria-label': tr('collapse'),
+                  'data-no-drag': true,
+                  onClick: () => {
+                    setDetailsOpen(false)
+                    setCollapsed(true)
+                  },
+                },
                 h(
-                  'span',
-                  { className: 'rb-board__body' },
-                  h('span', { className: 'rb-board__label' }, '当前米价'),
-                  h('span', { className: 'rb-board__value' }, spend === null ? '—' : spend.period === 'offPeak' ? '减半' : '原价'),
+                  'svg',
+                  { viewBox: '0 0 12 12', width: 12, height: 12, fill: 'none', 'aria-hidden': true },
+                  h('path', {
+                    d: 'M2.5 4.5 6 8l3.5-3.5',
+                    stroke: 'currentColor',
+                    strokeWidth: 1.4,
+                    strokeLinecap: 'round',
+                    strokeLinejoin: 'round',
+                  }),
                 ),
               ),
+              !errorish
+                ? h(
+                    'span',
+                    {
+                      className: `rb-board${spend?.period === 'offPeak' ? ' is-sale' : ''}`,
+                      title: tr('priceAria', { price: periodLabel, hours: tr('peakHours') }),
+                    },
+                    h('span', { className: 'rb-board__label' }, tr('priceLabel')),
+                    h('span', { className: 'rb-board__value' }, periodLabel),
+                  )
+                : null,
             ),
+            h(Scene, {
+              tier: errorish ? 'empty' : tier,
+              mood: showEmpty ? 'empty' : status === 'low' ? 'low' : errorish ? 'ok' : 'ok',
+              eating,
+              girlArt: art.girl === true,
+              vatArt: art.vat === true,
+              continuousArt: art.continuous === true,
+              fill: riceFill,
+              showEmpty,
+              reduced,
+              biteLabel: bite !== null && eating ? `−${formatSmall(bite.cny, currency)}` : null,
+              biteAt: bite?.at ?? 0,
+            }),
             h(
               'div',
-              { className: 'rb-bubble-slot' },
+              { className: 'rb-amount-block' },
+              h('div', { className: 'rb-label' }, tr('accountBalance')),
               h(
                 'div',
-                { className: 'rb-bubble' },
-                h('span', { className: 'rb-bubble__gloss' }),
+                { className: 'rb-amount-row' },
                 h(
-                  'span',
-                  { className: 'rb-bubble__text' },
-                  hintFor({ loaded, failed, eating, stale: doc?.stale === true, mood, tier, fill }),
+                  'div',
+                  { className: 'rb-amount' },
+                  signedIn && shownBalance !== null
+                    ? [
+                        h('span', { key: 'c', className: 'rb-cur' }, currencySymbol(currency)),
+                        h('span', { key: 'v', className: 'rb-value' }, formatNumber(shownBalance, 2)),
+                      ]
+                    : h('span', { className: 'rb-value rb-value--dim' }, '—'),
                 ),
+                !errorish
+                  ? h(
+                      'button',
+                      {
+                        type: 'button',
+                        className: 'rb-detail-link',
+                        title: detailsOpen ? tr('hideDetails') : tr('details'),
+                        'aria-expanded': detailsOpen,
+                        'data-no-drag': true,
+                        onClick: () => setDetailsOpen((current) => !current),
+                      },
+                      detailsOpen ? tr('hideDetails') : tr('details'),
+                      h('span', { className: 'rb-detail-link__chev' }, detailsOpen ? '⌃' : '›'),
+                    )
+                  : null,
+              ),
+              h(
+                'span',
+                { className: 'rb-sr' },
+                tr('summaryAria', {
+                  balance: formatMoney(shownBalance, currency),
+                  today: formatSmall(today, currency),
+                  total: formatMoney(total, currency),
+                  days: formatDays(daysLeft, tr),
+                }),
               ),
             ),
+            showGauge
+              ? h(
+                  'div',
+                  {
+                    className: 'rb-gauge',
+                    role: 'img',
+                    'aria-label': tr('gaugeAria', {
+                      balance: formatMoney(shownBalance, currency),
+                      low: formatThreshold(lowAt, currency),
+                      full: formatThreshold(fullAt, currency),
+                    }),
+                  },
+                  h(
+                    'div',
+                    { className: 'rb-track' },
+                    h('div', { className: 'rb-fill', style: { width: `${Math.round(ratio * 1000) / 10}%` } }),
+                    h('div', {
+                      className: 'rb-marker',
+                      style: { left: `calc(${Math.round(ratio * 1000) / 10}% - 3px)` },
+                    }),
+                  ),
+                  h(
+                    'div',
+                    { className: 'rb-ticks' },
+                    h('span', null, formatThreshold(lowAt, currency)),
+                    h('span', null, formatThreshold(fullAt, currency)),
+                  ),
+                )
+              : null,
+            showStats
+              ? h(
+                  'div',
+                  { className: 'rb-stats' },
+                  h(
+                    'div',
+                    { className: 'rb-stat', title: tr('todayHint') },
+                    h('span', { className: 'rb-stat__label' }, tr('today')),
+                    h(
+                      'span',
+                      { className: `rb-stat__value${spend?.source !== 'platform' ? ' is-dim' : ''}` },
+                      formatSmall(today, currency),
+                    ),
+                  ),
+                  h(
+                    'div',
+                    { className: 'rb-stat', title: tr('lifetimeHint') },
+                    h('span', { className: 'rb-stat__label' }, tr('total')),
+                    h(
+                      'span',
+                      { className: `rb-stat__value${spend?.source !== 'platform' ? ' is-dim' : ''}` },
+                      formatMoney(total, currency),
+                    ),
+                  ),
+                  h(
+                    'div',
+                    {
+                      className: 'rb-stat',
+                      title: average === null ? tr('unavailable') : tr('daysHint', { avg: formatMoney(average, currency) }),
+                    },
+                    h('span', { className: 'rb-stat__label' }, tr('daysLeft')),
+                    h('span', { className: 'rb-stat__value' }, formatDays(daysLeft, tr)),
+                  ),
+                )
+              : null,
+            subText !== null
+              ? h(
+                  'div',
+                  { className: `rb-sub${stale || status === 'low' || status === 'empty' || (active && spend?.source !== 'platform') ? ' is-warn' : ''}` },
+                  h('span', null, subText),
+                  (stale || notReady || balanceUnavailable || (active && spend?.source !== 'platform')) && retry
+                    ? h(
+                        'button',
+                        {
+                          type: 'button',
+                          className: 'rb-link',
+                          onClick: retry,
+                          'data-no-drag': true,
+                        },
+                        tr('retry'),
+                      )
+                    : null,
+                  status === 'empty' && links?.topUpUrl
+                    ? h(
+                        'button',
+                        {
+                          type: 'button',
+                          className: 'rb-link',
+                          onClick: () => openExternal(links.topUpUrl),
+                          'data-no-drag': true,
+                        },
+                        tr('topUp'),
+                      )
+                    : null,
+                )
+              : null,
+            detailsOpen && !errorish
+              ? h(
+                  'div',
+                  { className: 'rb-detail', role: 'group', 'aria-label': tr('detailsTitle') },
+                  h(
+                    'div',
+                    { className: 'rb-detail__row' },
+                    h('span', { className: 'rb-detail__label' }, tr('paid')),
+                    h('span', { className: 'rb-detail__value' }, formatMoney(primary?.recharge, currency)),
+                  ),
+                  h(
+                    'div',
+                    { className: 'rb-detail__row' },
+                    h('span', { className: 'rb-detail__label' }, tr('bonus')),
+                    h('span', { className: 'rb-detail__value' }, formatMoney(primary?.bonus, currency)),
+                  ),
+                  h(
+                    'div',
+                    { className: 'rb-detail__row' },
+                    h('span', { className: 'rb-detail__label' }, tr('ricePrice')),
+                    h('span', { className: 'rb-detail__value' }, periodLabel),
+                  ),
+                  h(
+                    'div',
+                    { className: 'rb-detail__row' },
+                    h('span', { className: 'rb-detail__label' }, tr('updated')),
+                    h('span', { className: 'rb-detail__value' }, formatClock(updatedAt)),
+                  ),
+                  h(
+                    'div',
+                    { className: 'rb-detail__note' },
+                    spend?.source === 'platform' ? tr('dataSource') : tr('unavailable'),
+                  ),
+                  h('div', { className: 'rb-detail__note' }, tr('peakHours')),
+                  h('div', { className: 'rb-detail__note' }, tr('dragHint')),
+                  spend?.source !== 'platform' && typeof spend?.localToday === 'number'
+                    ? [
+                        h(
+                          'div',
+                          { key: 'local', className: 'rb-detail__note' },
+                          `${tr('localEstimate')} · ${formatSmall(spend.localToday, currency)} / ${formatMoney(spend.localTotal, currency)}`,
+                        ),
+                        h('div', { key: 'local-note', className: 'rb-detail__note' }, tr('localNote')),
+                      ]
+                    : null,
+                  h(
+                    'div',
+                    { className: 'rb-detail__actions' },
+                    links?.usageUrl
+                      ? h(
+                          'button',
+                          {
+                            type: 'button',
+                            className: 'rb-action',
+                            onClick: () => openExternal(links.usageUrl),
+                            'data-no-drag': true,
+                          },
+                          tr('usageDetails'),
+                        )
+                      : null,
+                    links?.topUpUrl
+                      ? h(
+                          'button',
+                          {
+                            type: 'button',
+                            className: 'rb-action',
+                            onClick: () => openExternal(links.topUpUrl),
+                            'data-no-drag': true,
+                          },
+                          tr('topUp'),
+                        )
+                      : null,
+                    h(
+                      'button',
+                      { type: 'button', className: 'rb-action', onClick: resetLayout, 'data-no-drag': true },
+                      tr('resetLayout'),
+                    ),
+                  ),
+                  h('div', { className: 'rb-detail__note' }, tr('version', { version: doc?.version ?? '—' })),
+                )
+              : null,
+            grip,
           ),
         ),
       )
     }
 
+    /* ------------------------------------------------------------------ */
+    /* Styles                                                              */
+    /* ------------------------------------------------------------------ */
+
     const CSS = `
 .rb-root { box-sizing: border-box; font-family: inherit; }
+.rb-root *, .rb-root *::before, .rb-root *::after { box-sizing: border-box; }
+.rb-shell { transform-origin: top left; }
+
 .rb-card {
+  width: 236px;
   background: var(--dsw-alias-bg-layer-1, #1b1f2a);
   border: 1px solid var(--dsw-alias-border-l1, rgba(255,255,255,.12));
-  border-radius: 12px;
-  padding: 8px 10px 7px;
-  box-shadow: 0 8px 24px rgba(0,0,0,.28);
+  border-radius: 14px;
+  padding: 9px 10px 8px;
+  box-shadow: 0 10px 30px rgba(0,0,0,.34);
   color: var(--dsw-alias-label-primary, #e8ecf5);
-  transition: box-shadow .3s ease, border-color .3s ease;
+  position: relative;
+  cursor: grab;
+  transition: opacity .2s ease, border-color .2s ease;
 }
-.rb-card--eating { border-color: rgba(90,150,255,.55); box-shadow: 0 8px 28px rgba(60,120,255,.28); }
+.rb-card:active { cursor: grabbing; }
+.rb-card button, .rb-card a, .rb-card .rb-link, .rb-card .rb-action { cursor: pointer; }
+.rb-card .rb-resize { cursor: nwse-resize; }
+.rb-card.is-stale { border-color: rgba(232,185,106,.42); }
+.rb-card.is-stale .rb-value, .rb-card.is-stale .rb-stat__value { opacity: .62; }
+.rb-card.is-error .rb-stage { opacity: .55; }
 
-.rb-head { display:flex; align-items:center; justify-content:space-between; }
-.rb-title { font-size: 11px; letter-spacing:2px; color: var(--dsw-alias-label-secondary, #9aa4b8); }
-.rb-collapse {
-  border:none; background:transparent; cursor:pointer; line-height:1;
-  color: var(--dsw-alias-label-secondary, #9aa4b8); font-size:13px; padding:0 2px;
+.rb-head {
+  position: relative;
+  display: flex; align-items: center; gap: 2px; height: 24px;
+  cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none;
 }
-.rb-collapse:hover { color: var(--dsw-alias-label-primary, #e8ecf5); }
-
-.rb-scene { display:flex; align-items:flex-end; justify-content:center; gap:0; margin:2px 0 3px; min-height:110px; }
-.rb-vat-box { width:110px; height:113px; flex:0 0 auto; }
-.rb-girl-box { position:relative; width:112px; height:115px; flex:0 0 auto; margin-left:-4px; }
-
-.rb-vat { position:relative; width:100%; height:100%; }
-.rb-vat__layer {
-  position:absolute; inset:0; width:100%; height:100%; object-fit:contain;
-  opacity:0; transition: opacity .55s ease;
-  user-select:none; -webkit-user-drag:none; pointer-events:none;
+.rb-head:active { cursor: grabbing; }
+.rb-title { font-size: 10.5px; letter-spacing: 1.1px; color: var(--dsw-alias-label-secondary, #9aa4b8); white-space: nowrap; }
+.rb-status { margin-left: auto; display: inline-flex; align-items: center; gap: 4px; font-size: 10px; color: var(--dsw-alias-label-secondary, #9aa4b8); white-space: nowrap; }
+.rb-dot { width: 5px; height: 5px; border-radius: 50%; flex: 0 0 auto; background: #e8b96a; box-shadow: 0 0 6px rgba(232,185,106,.5); }
+.rb-dot--full, .rb-dot--overflow { background: #e8b96a; }
+.rb-dot--low { background: #e0a35c; box-shadow: 0 0 6px rgba(224,163,92,.6); }
+.rb-dot--empty { background: #7d879c; box-shadow: none; }
+.rb-dot--muted { background: #6d7890; box-shadow: none; }
+.rb-dot.is-eating { animation: rb-dot .9s ease-in-out infinite; }
+.rb-dot.is-stale { background: #e0a35c; box-shadow: 0 0 6px rgba(224,163,92,.55); }
+.rb-chev {
+  width: 24px; height: 24px; margin-right: -4px; border: none; border-radius: 6px;
+  background: transparent; color: var(--dsw-alias-label-secondary, #9aa4b8);
+  display: grid; place-items: center; cursor: pointer; padding: 0; flex: 0 0 auto;
 }
-.rb-vat__layer.is-on { opacity:1; }
+.rb-chev:hover { background: var(--dsw-alias-bg-layer-2, rgba(255,255,255,.06)); color: var(--dsw-alias-label-primary, #e8ecf5); }
+
+.rb-stage { position: relative; height: 113px; margin: 4px 0 1px; }
+.rb-scene {
+  position: absolute; inset: 0; display: flex; align-items: flex-end; justify-content: center; gap: 0;
+  opacity: 0; transition: opacity .28s ease; pointer-events: none;
+}
+.rb-scene.is-on { opacity: 1; }
+.rb-vat-box { position: relative; width: 110px; height: 113px; flex: 0 0 auto; }
+.rb-girl-box { position: relative; width: 112px; height: 115px; flex: 0 0 auto; margin-left: -4px; }
+.rb-vat { position: relative; width: 100%; height: 100%; }
+.rb-vat__base, .rb-vat__layer {
+  position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain;
+  user-select: none; -webkit-user-drag: none; pointer-events: none;
+}
+.rb-vat__layer { opacity: 0; transition: opacity .45s ease; }
+.rb-vat__layer.is-on { opacity: 1; }
 .rb-vat__rice-clip {
-  position:absolute; inset:0; overflow:hidden;
+  position: absolute; inset: 0; overflow: hidden;
+  opacity: 0; transition: opacity .45s ease;
   -webkit-mask: url('${asset('vat-rice-mask')}') center / 100% 100% no-repeat;
   mask: url('${asset('vat-rice-mask')}') center / 100% 100% no-repeat;
 }
+.rb-vat__rice-clip.is-on { opacity: 1; }
 .rb-vat__rice {
-  position:absolute; inset:0; width:100%; height:100%; object-fit:contain;
-  pointer-events:none;
-  transition: transform .9s cubic-bezier(.22,1,.36,1);
+  position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain;
+  pointer-events: none;
+  transition: transform .6s cubic-bezier(.22,1,.36,1);
 }
 
+.rb-girl-fade { position: absolute; inset: 0; animation: rb-pose-in .18s ease-out; }
 .rb-girl {
-  display:block; width:100%; height:100%; object-fit:contain;
+  display: block; width: 100%; height: 100%; object-fit: contain;
   transform-origin: 50% 92%;
-  user-select:none; -webkit-user-drag:none; pointer-events:none;
+  user-select: none; -webkit-user-drag: none; pointer-events: none;
 }
 .rb-girl--idle { animation: rb-bob 3.4s ease-in-out infinite; }
-.rb-girl--worried { animation: rb-tremble 2.6s ease-in-out infinite; }
-/* eating is an animated WebP (16 frames, 4.6s); the sprite supplies its own motion */
+.rb-girl--worried { animation: rb-tremble 3.8s ease-in-out infinite; }
 
-/* empty state: she lies across the vat, head on the rim */
-.rb-scene--empty { justify-content:center; }
-.rb-drape-box { position:relative; width:136px; height:140px; }
-.rb-vat-box--drape { position:absolute; inset:0; width:100%; height:100%; }
-.rb-drape-box .rb-girl { position:absolute; inset:0; width:100%; height:100%; transform:translateY(-52%); }
-.rb-drape-box .rb-girl--idle,
+.rb-scene--empty { justify-content: center; }
+.rb-drape-box { position: relative; width: 110px; height: 113px; }
+.rb-vat-box--drape { position: absolute; inset: 0; width: 100%; height: 100%; }
+.rb-drape-box .rb-girl-fade { position: absolute; inset: 0; }
+.rb-drape-box .rb-girl {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  transform: translateY(-52%);
+}
 .rb-drape-box .rb-girl--empty { animation: rb-sleep 4.8s ease-in-out infinite; }
 
-/* grains thrown out of the bowl while she eats */
-.rb-splash { position:absolute; inset:0; pointer-events:none; z-index:2; }
+.rb-splash { position: absolute; inset: 0; pointer-events: none; z-index: 2; }
 .rb-splash__grain {
-  position:absolute; top:38%; width:3px; height:4px; border-radius:50% 50% 45% 45%;
-  background:#fffdf6; opacity:0; box-shadow:0 0 2px rgba(255,255,255,.7);
-  animation: rb-flick 1.1s linear infinite;
+  position: absolute; top: 38%; width: 3px; height: 4px; border-radius: 50% 50% 45% 45%;
+  background: #fffdf6; opacity: 0; box-shadow: 0 0 2px rgba(255,255,255,.7);
+  animation: rb-flick 1s linear infinite;
 }
-.rb-splash__grain--0 { left:30%; animation-delay:0s }
-.rb-splash__grain--1 { left:37%; animation-delay:.14s }
-.rb-splash__grain--2 { left:45%; animation-delay:.05s }
-.rb-splash__grain--3 { left:52%; animation-delay:.2s }
-.rb-splash__grain--4 { left:59%; animation-delay:.09s }
-.rb-splash__grain--5 { left:66%; animation-delay:.25s }
-.rb-splash__grain--6 { left:42%; animation-delay:.3s }
+.rb-splash__grain--0 { left: 34%; animation-delay: 0s; --dx: -7px; }
+.rb-splash__grain--1 { left: 47%; animation-delay: .12s; --dx: 2px; }
+.rb-splash__grain--2 { left: 58%; animation-delay: .06s; --dx: 8px; }
 
-.rb-amount { display:flex; align-items:baseline; gap:2px; justify-content:center; }
-.rb-amount__currency { font-size:12px; color: var(--dsw-alias-label-secondary, #9aa4b8); }
-.rb-amount__value { font-size:22px; font-weight:600; letter-spacing:.5px; font-variant-numeric: tabular-nums; }
-.rb-amount__value--dim { color: var(--dsw-alias-label-secondary, #9aa4b8); }
-.rb-sub { text-align:center; font-size:10px; color: var(--dsw-alias-label-secondary, #9aa4b8); margin-top:1px; }
-
-.rb-stats { display:flex; gap:6px; margin-top:6px; }
-.rb-stat {
-  flex:1; display:flex; flex-direction:column; align-items:center; gap:1px;
-  background: var(--dsw-alias-bg-layer-2, rgba(255,255,255,.04));
-  border-radius:7px; padding:4px 2px;
+.rb-amount-block { text-align: center; position: relative; margin-top: 2px; }
+.rb-label { font-size: 9px; letter-spacing: .7px; color: var(--dsw-alias-label-secondary, #9aa4b8); }
+.rb-amount-row { position: relative; display: flex; align-items: center; justify-content: center; }
+.rb-amount { display: inline-flex; align-items: baseline; justify-content: center; gap: 2px; min-width: 112px; max-width: 150px; }
+.rb-detail-link {
+  position: absolute; right: 0; top: 50%; transform: translateY(-50%);
+  border: none; background: transparent; color: var(--dsw-alias-label-secondary, #9aa4b8);
+  font: inherit; font-size: 9px; cursor: pointer; white-space: nowrap; padding: 2px 0;
+  display: inline-flex; align-items: center; gap: 2px;
 }
-.rb-stat__label { font-size:9px; color: var(--dsw-alias-label-secondary, #9aa4b8); }
-.rb-stat__value { font-size:11px; font-weight:500; font-variant-numeric: tabular-nums; }
+.rb-detail-link:hover { color: var(--dsw-alias-label-primary, #e8ecf5); }
+.rb-detail-link__chev { font-size: 10px; line-height: 1; }
+.rb-cur { font-size: 12px; color: var(--dsw-alias-label-secondary, #9aa4b8); }
+.rb-value {
+  font-size: 24px; font-weight: 600; letter-spacing: .2px; line-height: 1.15;
+  font-variant-numeric: tabular-nums; color: var(--dsw-alias-label-primary, #e8ecf5);
+}
+.rb-value--dim { color: var(--dsw-alias-label-secondary, #9aa4b8); }
+.rb-bite-float {
+  position: absolute; left: 50%; top: 38%; z-index: 5;
+  transform: translate(-50%, -50%);
+  font-size: 9px; line-height: 1.2; font-variant-numeric: tabular-nums; white-space: nowrap;
+  color: #ffd9a0; background: rgba(18, 22, 32, .88);
+  border: 1px solid rgba(232,185,106,.58); border-radius: 999px; padding: 2px 7px;
+  box-shadow: 0 3px 10px rgba(0,0,0,.38), 0 0 8px rgba(232,185,106,.16);
+  pointer-events: none;
+  animation: rb-bite-rise 2.2s ease-out forwards;
+}
 
-.rb-board-row { display:flex; align-items:stretch; gap:6px; margin-top:8px; }
-.rb-board-slot { flex:1 1 0; min-width:0; display:flex; align-items:center; justify-content:center; }
-.rb-bubble-slot { flex:1 1 0; min-width:0; display:flex; align-items:center; }
+.rb-gauge { margin: 7px 2px 0; }
+.rb-track { position: relative; height: 3px; border-radius: 999px; background: rgba(255,255,255,.09); }
+.rb-fill {
+  position: absolute; inset: 0 auto 0 0; border-radius: 999px;
+  background: linear-gradient(90deg, #d9c79e, #fffdf6);
+  box-shadow: 0 0 8px rgba(255,248,225,.22);
+  transition: width .6s cubic-bezier(.22,1,.36,1);
+}
+.rb-marker {
+  position: absolute; top: -3px; width: 6px; height: 9px; border-radius: 50% 50% 45% 45%;
+  background: linear-gradient(180deg, #fffdf6, #e9dcc0);
+  box-shadow: 0 0 5px rgba(255,250,235,.65);
+  transition: left .6s cubic-bezier(.22,1,.36,1);
+}
+.rb-ticks { display: flex; justify-content: space-between; margin-top: 4px; font-size: 8px; color: #707b92; }
+.rb-ticks span:last-child { text-align: right; }
+
+.rb-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; margin-top: 7px; }
+.rb-stat { display: flex; flex-direction: column; align-items: center; gap: 1px; min-width: 0; text-align: center; }
+.rb-stat__label {
+  font-size: 9px; color: var(--dsw-alias-label-secondary, #9aa4b8);
+  max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.rb-stat__value {
+  font-size: 11px; font-weight: 500; font-variant-numeric: tabular-nums;
+  max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.rb-stat__value.is-dim { color: var(--dsw-alias-label-secondary, #9aa4b8); }
+
+.rb-sub {
+  margin-top: 5px; text-align: center; font-size: 9px; line-height: 1.45;
+  color: var(--dsw-alias-label-secondary, #9aa4b8);
+}
+.rb-sub.is-warn { color: #e0a35c; }
+.rb-link {
+  border: none; background: transparent; color: inherit; font: inherit;
+  text-decoration: underline; text-underline-offset: 2px; cursor: pointer; padding: 0 4px;
+  margin-left: 2px;
+}
+.rb-link:focus-visible, .rb-detail-link:focus-visible, .rb-chev:focus-visible, .rb-action:focus-visible,
+.rb-pill:focus-visible, .rb-resize:focus-visible {
+  outline: 2px solid #f3e7c9; outline-offset: 2px;
+}
+
 .rb-board {
-  position:relative; display:inline-flex; transform:rotate(-1.6deg);
-  border-radius:6px; padding:3px 9px 3px 8px;
-  background:linear-gradient(180deg,#8a5a34,#6b4226);
-  border:1px solid #4a2c18;
-  box-shadow:0 2px 6px rgba(0,0,0,.35);
-  transition: background .4s ease, box-shadow .4s ease;
+  position: absolute; left: 50%; top: 50%; z-index: 2;
+  display: inline-flex; align-items: center; justify-content: center; gap: 3px;
+  min-width: 96px; box-sizing: border-box; padding: 3px 6px; text-align: center;
+  transform: translate(-50%, -50%) rotate(-1.2deg); border-radius: 5px;
+  background: linear-gradient(180deg, #8a5a34, #6b4226);
+  border: 1px solid #4a2c18; box-shadow: 0 2px 5px rgba(0,0,0,.3);
+  transition: background .3s ease, box-shadow .3s ease;
 }
-.rb-board--sale {
-  background:linear-gradient(180deg,#b4552f,#8a3a1f);
-  box-shadow:0 0 12px rgba(235,130,70,.45), 0 2px 6px rgba(0,0,0,.35);
+.rb-board.is-sale {
+  background: linear-gradient(180deg, #b4552f, #8a3a1f);
+  box-shadow: 0 0 10px rgba(235,130,70,.34), 0 2px 5px rgba(0,0,0,.3);
 }
-.rb-board__ruffle {
-  position:absolute; top:-2.5px; left:50%; width:5px; height:5px; margin-left:-2.5px;
-  border-radius:50%; background:#3a2413;
-}
-.rb-board__body { display:flex; align-items:baseline; gap:6px; }
-.rb-board__label { font-size:9px; letter-spacing:1px; color:#f0d8bd; }
-.rb-board__value { font-size:12px; font-weight:700; color:#fff4e4; }
-.rb-board--sale .rb-board__value { color:#ffd9a0; }
-/* A glossy hint plate, not a speech bubble: no tail, flat gloss band. */
-.rb-bubble {
-  position:relative; width:100%; box-sizing:border-box;
-  padding:6px 6px;
-  border-radius:10px;
-  background:linear-gradient(165deg,#ffffff 0%,#e8f3ff 46%,#b6d8f8 100%);
-  border:1px solid rgba(255,255,255,.95);
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,.98),
-    inset 0 -2px 7px rgba(70,130,200,.22),
-    0 2px 8px rgba(25,65,135,.35);
-  color:#123862;
-  font-size:9px; font-weight:600; line-height:1.2; text-align:center; letter-spacing:.2px;
-  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
-  animation: rb-floaty 4.6s ease-in-out infinite;
-}
-.rb-bubble__gloss {
-  position:absolute; left:5px; right:5px; top:2px; height:42%;
-  border-radius:8px 8px 12px 12px;
-  background:linear-gradient(180deg, rgba(255,255,255,.55), rgba(255,255,255,0));
-  pointer-events:none;
-}
-.rb-bubble__text { position:relative; z-index:1; display:block; }
-@keyframes rb-floaty { 0%,100% { transform: translateY(0) } 50% { transform: translateY(-1.5px) } }
+.rb-board__label { font-size: 9px; line-height: 1.1; letter-spacing: .2px; color: #f0d8bd; white-space: nowrap; }
+.rb-board__value { font-size: 9px; line-height: 1.1; font-weight: 700; color: #fff4e4; white-space: nowrap; }
+.rb-board.is-sale .rb-board__value { color: #ffd9a0; }
 
-.rb-root--collapsed { width:auto; }
+.rb-detail {
+  margin-top: 7px; padding: 7px 8px; border-radius: 8px;
+  background: var(--dsw-alias-bg-layer-2, rgba(255,255,255,.04));
+  font-size: 9px; line-height: 1.55; color: var(--dsw-alias-label-secondary, #9aa4b8);
+}
+.rb-detail__row { display: flex; justify-content: space-between; gap: 8px; }
+.rb-detail__label { flex: 0 0 auto; }
+.rb-detail__value { text-align: right; color: var(--dsw-alias-label-primary, #e8ecf5); font-variant-numeric: tabular-nums; }
+.rb-detail__note { margin-top: 4px; color: #7f8aa3; }
+.rb-detail__actions { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+.rb-action {
+  border: 1px solid var(--dsw-alias-border-l1, rgba(255,255,255,.12));
+  background: transparent; color: var(--dsw-alias-label-primary, #e8ecf5);
+  border-radius: 6px; padding: 3px 6px; font: inherit; font-size: 9px; cursor: pointer;
+}
+.rb-action:hover { background: rgba(255,255,255,.06); }
+
+.rb-sr {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0;
+}
+
+.rb-resize {
+  position: absolute; right: 1px; bottom: 1px; width: 18px; height: 18px;
+  cursor: nwse-resize; touch-action: none; opacity: .32;
+  background:
+    linear-gradient(135deg, transparent 48%, currentColor 49%, currentColor 55%, transparent 56%) 3px 3px / 8px 8px no-repeat,
+    linear-gradient(135deg, transparent 48%, currentColor 49%, currentColor 55%, transparent 56%) 8px 8px / 8px 8px no-repeat;
+  color: var(--dsw-alias-label-secondary, #9aa4b8);
+}
+.rb-resize:hover, .rb-resize:focus-visible { opacity: .85; }
+
 .rb-pill {
-  display:flex; align-items:center; gap:5px; cursor:pointer;
+  display: inline-flex; align-items: center; gap: 6px; max-width: 320px;
+  padding: 5px 10px 5px 6px; border-radius: 999px;
   background: var(--dsw-alias-bg-layer-1, #1b1f2a);
   border: 1px solid var(--dsw-alias-border-l1, rgba(255,255,255,.12));
-  border-radius: 999px; padding: 3px 9px 3px 4px;
-  color: var(--dsw-alias-label-primary, #e8ecf5); font-family: inherit;
+  color: var(--dsw-alias-label-primary, #e8ecf5);
+  box-shadow: 0 6px 18px rgba(0,0,0,.3);
+  cursor: grab; user-select: none; -webkit-user-select: none; touch-action: none;
+  position: relative;
 }
+.rb-pill:active { cursor: grabbing; }
+.rb-pill.is-stale { border-color: rgba(232,185,106,.42); }
 .rb-pill__grain {
-  width:9px; height:12px; border-radius:50% 50% 45% 45%;
-  background: linear-gradient(180deg,#fffdf6,#e6d9b8); display:inline-block;
+  width: 12px; height: 15px; flex: 0 0 auto; border-radius: 50% 50% 45% 45%;
+  background: linear-gradient(180deg, #fffdf6, #e6d9b8);
+  box-shadow: 0 0 0 2px rgba(232,185,106,.18);
 }
-.rb-pill__grain--eat { animation: rb-bob .5s ease-in-out infinite; }
-.rb-pill__amount { font-size:11px; font-variant-numeric: tabular-nums; }
+.rb-pill__grain--low { box-shadow: 0 0 0 2px rgba(224,163,92,.55); background: linear-gradient(180deg,#f7e6c3,#dfc08a); }
+.rb-pill__grain--empty, .rb-pill__grain--muted { opacity: .55; box-shadow: 0 0 0 2px rgba(150,160,180,.16); }
+.rb-pill__grain.is-eating { animation: rb-bob .5s ease-in-out infinite; }
+.rb-pill__amount { font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.rb-pill__days { font-size: 9px; color: var(--dsw-alias-label-secondary, #9aa4b8); white-space: nowrap; }
+.rb-pill__dot { width: 5px; height: 5px; border-radius: 50%; background: #e0a35c; flex: 0 0 auto; }
+.rb-pill .rb-resize { right: -3px; bottom: -3px; width: 16px; height: 16px; opacity: .25; }
 
+.rb-card, .rb-pill { -webkit-tap-highlight-color: transparent; }
+.rb-card button, .rb-pill { font-family: inherit; }
+
+@keyframes rb-bob { 0%,100% { transform: translateY(0) } 50% { transform: translateY(-2px) } }
+@keyframes rb-tremble { 0%,100% { transform: translateY(0) translateX(0) } 25% { transform: translateY(.5px) translateX(-1px) } 75% { transform: translateY(.5px) translateX(1px) } }
+@keyframes rb-sleep { 0%,100% { transform: translateY(-52%) rotate(-.6deg) } 50% { transform: translateY(-52%) rotate(-1.4deg) } }
+@keyframes rb-dot { 0%,100% { opacity: 1; transform: scale(1) } 50% { opacity: .45; transform: scale(.8) } }
+@keyframes rb-pose-in { from { opacity: 0 } to { opacity: 1 } }
+@keyframes rb-bite-rise {
+  0% { opacity: 0; transform: translate(-50%, -50%) translateY(6px) scale(.86) }
+  14% { opacity: 1; transform: translate(-50%, -50%) translateY(0) scale(1) }
+  72% { opacity: 1; transform: translate(-50%, -50%) translateY(-9px) scale(1) }
+  100% { opacity: 0; transform: translate(-50%, -50%) translateY(-18px) scale(.97) }
+}
 @keyframes rb-flick {
-  0% { opacity:0; transform: translate(0,0) scale(.8) }
-  18% { opacity:1 }
-  60% { opacity:.9; transform: translate(var(--dx, 6px), -14px) scale(1) }
-  100% { opacity:0; transform: translate(var(--dx, 6px), -24px) scale(.7) }
+  0% { opacity: 0; transform: translate(0,0) scale(.8) }
+  18% { opacity: 1 }
+  60% { opacity: .9; transform: translate(var(--dx, 6px), -14px) scale(1) }
+  100% { opacity: 0; transform: translate(var(--dx, 6px), -24px) scale(.7) }
 }
-.rb-splash__grain--0 { --dx:-10px } .rb-splash__grain--1 { --dx:-6px }
-.rb-splash__grain--2 { --dx:-2px }  .rb-splash__grain--3 { --dx:3px }
-.rb-splash__grain--4 { --dx:7px }   .rb-splash__grain--5 { --dx:11px }
-.rb-splash__grain--6 { --dx:-4px }
-
-@keyframes rb-bob { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-2px)} }
-@keyframes rb-tremble { 0%,100%{transform:translateX(0)} 25%{transform:translateX(-1px)} 75%{transform:translateX(1px)} }
-@keyframes rb-sleep { 0%,100%{transform:translateY(-52%) rotate(-.6deg)} 50%{transform:translateY(-52%) rotate(-1.4deg)} }
 
 @media (prefers-reduced-motion: reduce) {
-  .rb-vat__layer, .rb-girl, .rb-splash__grain, .rb-pill__grain, .rb-bubble { animation: none !important; }
+  .rb-vat__layer, .rb-vat__rice-clip, .rb-vat__rice, .rb-girl, .rb-girl-fade,
+  .rb-splash__grain, .rb-pill__grain, .rb-dot, .rb-bite-float, .rb-fill, .rb-marker {
+    animation: none !important;
+    transition: none !important;
+  }
+  .rb-scene { transition: none !important; }
 }
 `
 
     return {
-      inject: ['slots'],
+      inject: ['slots', 'locale'],
       apply(ctx) {
+        ctx.effect(() => ctx.locale.register(NS, { zh: ZH, en: EN }), 'rice-vat: dictionaries')
         ctx.effect(() =>
-          ctx.slots.inject('shell.overlay', () =>
-            ctx.slots.register({ name: 'shell.overlay', id: 'rice-bowl', order: 900 }, RiceBowlCard),
-          ),
+          ctx.slots.inject('shell.overlay', () => {
+            const bound = ctx.locale.bind(NS)
+            const Panel = (props) => h(RiceBowlCard, { ...props, t: typeof props.t === 'function' ? props.t : bound })
+            return ctx.slots.register({ name: 'shell.overlay', id: 'rice-bowl', order: 900, locale: NS }, Panel)
+          }),
         )
       },
     }

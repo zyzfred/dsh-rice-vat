@@ -1,18 +1,18 @@
 {
   "meta": {
     "title": "Rice vat",
-    "description": "Shows the DeepSeek account balance as the rice level in a blue vat, with a whale-girl companion who dozes off when the vat runs empty."
+    "description": "Shows the DeepSeek account balance as the rice level in a blue vat. Today's and all-time rice come from the account, with a whale-girl companion."
   },
   "ui": {
     "title": "Rice vat",
     "collapse": "Collapse",
-    "expand": "Expand the rice vat",
-    "today": "Today",
-    "total": "Total",
+    "expand": "Expand rice vat",
+    "today": "Today's rice",
+    "total": "All-time rice",
     "signedOut": "Not signed in to a DeepSeek account",
-    "loadFailed": "Could not read the panel data",
-    "refreshFailed": "Balance refresh failed; showing the last result",
-    "noRice": "Out of rice, the whale girl is asleep",
-    "scale": "Full at ¥30 · bare at ¥6"
+    "loadFailed": "Could not read account data",
+    "refreshFailed": "Account data delayed; showing the last result",
+    "noRice": "The vat is empty; she fell asleep hungry",
+    "scale": "Full at ¥100 · bare at ¥6"
   }
 }

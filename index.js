@@ -15,6 +15,8 @@ import { createHash, randomBytes } from 'node:crypto'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
+import { readAccountUsage } from './platform-usage.js'
+
 const ROUTE_PATH = '/api/rice-bowl'
 const PLUGIN_NAME = 'dsh-rice-vat'
 /** Single source of truth: the manifest, so the reported version cannot drift. */
@@ -41,6 +43,8 @@ const LOW_BALANCE = 6
 const BALANCE_TTL_MS = 45_000
 /** How long one consumption stays "fresh" enough to animate. */
 const EAT_WINDOW_MS = 6_000
+/** Account usage is refreshed independently of the balance cache. */
+const USAGE_TTL_MS = 60_000
 /** Debounce for writing the ledger to disk. */
 const SAVE_DELAY_MS = 1_500
 
@@ -206,6 +210,7 @@ export function apply(ctx) {
   let authOwner = 0
   let authToken = 0
   let authBootstrap = 0
+  let commandRegistered = false
 
   /**
    * Page-scoped bearer tokens.
@@ -299,6 +304,40 @@ export function apply(ctx) {
 
   const stateDir = join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'rice-bowl')
   const ledgerPath = join(stateDir, 'ledger.json')
+  const uiPath = join(stateDir, 'ui.json')
+
+  /*
+   * Visual visibility is a Host-owned preference because /rice-vat must be able
+   * to hide or show every open page. The Client can still cache layout locally;
+   * this file only records whether the widget is drawn at all. Billing never
+   * depends on it.
+   */
+  let uiVisible = true
+  let uiSave = Promise.resolve()
+
+  async function loadUiState() {
+    try {
+      const parsed = JSON.parse(await readFile(uiPath, 'utf8'))
+      uiVisible = parsed?.visible !== false
+    } catch {
+      uiVisible = true
+    }
+  }
+
+  function setUiVisible(visible) {
+    uiVisible = visible === true
+    uiSave = uiSave
+      .then(async () => {
+        await mkdir(stateDir, { recursive: true })
+        await writeFile(uiPath, JSON.stringify({ visible: uiVisible }), { encoding: 'utf8', mode: 0o600 })
+      })
+      .catch(() => {
+        /* the in-memory value still applies for this process */
+      })
+    return uiSave
+  }
+
+  const uiReady = loadUiState()
 
   /*
    * Artwork is not sensitive, so its route stays open; only money data is guarded.
@@ -352,6 +391,76 @@ export function apply(ctx) {
    * so `/diag` can explain a failing panel without leaking the balance.
    */
   const accountDiag = { signedIn: null, lastAttemptAt: 0, lastOkAt: 0, lastError: null }
+
+  /**
+   * Account usage cache. The Platform dashboard endpoints are not free; both
+   * `today` and `total_costs` are refreshed at most once per state poll. A failed
+   * refresh keeps the previous aggregate and marks it stale rather than zeroing it.
+   */
+  const usageCache = { at: 0, value: null, inflight: null, lastAttemptAt: 0, lastOkAt: 0, lastError: null }
+  const usageDiag = { lastAttemptAt: 0, lastOkAt: 0, lastError: null, partial: false, dailyCount: 0, hasToday: false, hasTotal: false, hasAverage: false }
+
+  function timezoneOffsetSeconds(now = new Date()) {
+    return -now.getTimezoneOffset() * 60
+  }
+
+  function updateUsageDiag(result) {
+    const ok = result?.ok === true
+    usageDiag.lastError = ok ? null : result?.reason ?? 'platform/unavailable'
+    usageDiag.partial = result?.partial === true
+    usageDiag.dailyCount = Array.isArray(result?.daily) ? result.daily.length : 0
+    usageDiag.hasToday = typeof result?.today === 'number'
+    usageDiag.hasTotal = typeof result?.total === 'number'
+    usageDiag.hasAverage = typeof result?.averageDaily === 'number'
+  }
+
+  async function getAccountUsage(base) {
+    const now = Date.now()
+    if (usageCache.value !== null && now - usageCache.at < USAGE_TTL_MS) return usageCache.value
+    if (usageCache.inflight !== null) return usageCache.inflight
+    usageCache.lastAttemptAt = now
+    usageDiag.lastAttemptAt = now
+    usageCache.inflight = (async () => {
+      try {
+        const account = ctx.get('deepseekAccount')
+        const result = await readAccountUsage({
+          account,
+          preferredCurrency: base?.primary?.currency,
+          now,
+          timezoneOffsetSeconds: timezoneOffsetSeconds(),
+          version: PLUGIN_VERSION,
+        })
+        if (result.ok === true) {
+          usageCache.value = result
+          usageCache.at = Date.now()
+          usageCache.lastOkAt = Date.now()
+          usageCache.lastError = null
+          usageDiag.lastOkAt = Date.now()
+          updateUsageDiag(result)
+          return result
+        }
+        usageCache.lastError = result.reason
+        updateUsageDiag(result)
+        if (usageCache.value !== null) {
+          usageCache.value = { ...usageCache.value, stale: true, error: result.reason }
+          return usageCache.value
+        }
+        return result
+      } catch (error) {
+        const reason = error?.message ?? 'platform/unknown'
+        usageCache.lastError = reason
+        usageDiag.lastError = reason
+        if (usageCache.value !== null) {
+          usageCache.value = { ...usageCache.value, stale: true, error: reason }
+          return usageCache.value
+        }
+        return { ok: false, reason, source: 'platform', updatedAt: now, currency: base?.primary?.currency ?? 'CNY', total: null, today: null, daily: [], averageDaily: null }
+      } finally {
+        usageCache.inflight = null
+      }
+    })()
+    return usageCache.inflight
+  }
 
   async function loadLedger() {
     try {
@@ -430,7 +539,12 @@ export function apply(ctx) {
     scheduleSave()
   }
 
-  function spendSummary() {
+  /**
+   * Local ledger summary, kept for the bite animation and a transparent
+   * "local estimate" fallback in the details view. It is never displayed as the
+   * account's today/lifetime total.
+   */
+  function localSpend() {
     if (ledger === null) return null
     const now = Date.now()
     const today = ledger.days[dayKey()] ?? { cny: 0, tokens: 0, calls: 0, byModel: {} }
@@ -448,6 +562,45 @@ export function apply(ctx) {
       recentCny: Math.round(window * 1e6) / 1e6,
       recentAt: fresh.length > 0 ? fresh[fresh.length - 1].at : null,
       period: billingPeriod(),
+    }
+  }
+
+  /**
+   * What the panel draws for consumption.
+   *
+   * `today` / `total` / `daily` / `averageDaily` are account-wide Platform data.
+   * Local ledger values are included under `local*` for the details view only, so
+   * a machine-local number can never masquerade as the account total.
+   */
+  function spendSummary(usage = null) {
+    const local = localSpend() ?? {
+      today: null,
+      todayCalls: 0,
+      total: null,
+      installedAt: null,
+      recentCny: 0,
+      recentAt: null,
+      period: billingPeriod(),
+    }
+    const account = usage?.ok === true
+    return {
+      today: account ? usage.today ?? null : null,
+      total: account ? usage.total ?? null : null,
+      daily: account && Array.isArray(usage.daily) ? usage.daily : [],
+      averageDaily: account && typeof usage.averageDaily === 'number' ? usage.averageDaily : null,
+      currency: usage?.currency ?? anchor.currency ?? 'CNY',
+      source: account ? 'platform' : 'unavailable',
+      partial: usage?.partial === true,
+      stale: usage?.stale === true,
+      updatedAt: typeof usage?.updatedAt === 'number' ? usage.updatedAt : null,
+      error: usage?.error ?? (account ? null : usage?.reason ?? null),
+      recentAt: local.recentAt,
+      recentCny: local.recentCny,
+      todayCalls: local.todayCalls,
+      period: local.period,
+      localToday: local.today,
+      localTotal: local.total,
+      installedAt: local.installedAt,
     }
   }
 
@@ -533,7 +686,7 @@ export function apply(ctx) {
       signedIn: true,
       error: null,
       links,
-      accounts: [{ id: 'signed-in', label: 'DeepSeek 账户', kind: 'account', masked: null, wallets, level: wallets[0]?.level ?? 0 }],
+      accounts: [{ id: 'signed-in', label: 'DeepSeek account', kind: 'account', masked: null, wallets, level: wallets[0]?.level ?? 0 }],
       primary: wallets[0] ?? null,
     }
   }
@@ -568,6 +721,7 @@ export function apply(ctx) {
 
   async function readState() {
     const base = await readBalance()
+    const usage = await getAccountUsage(base)
 
     accountDiag.lastAttemptAt = Date.now()
     accountDiag.signedIn = base.signedIn === true
@@ -595,7 +749,8 @@ export function apply(ctx) {
       stale: false,
       art: { vat: hasVatArt, girl: hasGirlArt, continuous: hasContinuousArt },
       live: liveForDisplay(),
-      spend: spendSummary(),
+      spend: spendSummary(usage),
+      ui: { visible: uiVisible },
     }
   }
 
@@ -669,6 +824,15 @@ export function apply(ctx) {
         assetErrors: Object.fromEntries(assetErrors),
         lastAssetError,
         account: accountDiag,
+        usage: {
+          ...usageDiag,
+          cachedAt: usageCache.at,
+          cachedAgeMs: usageCache.at === 0 ? null : Date.now() - usageCache.at,
+          source: usageCache.value?.source ?? null,
+          stale: usageCache.value?.stale === true,
+        },
+        ui: { visible: uiVisible, file: uiPath },
+        commands: { registered: commandRegistered },
         preview: FORCE_EMPTY ? 'forced-empty' : null,
       })
     }
@@ -689,7 +853,8 @@ export function apply(ctx) {
     /* Cheap liveness probe: no balance call, so the panel can poll it often. */
     if (url.pathname === `${ROUTE_PATH}/pulse`) {
       pulseServed += 1
-      const spend = spendSummary()
+      await uiReady
+      const spend = usageCache.value !== null ? spendSummary(usageCache.value) : cached.doc?.spend ?? spendSummary(null)
       return jsonResponse({
         ok: true,
         now: Date.now(),
@@ -698,6 +863,7 @@ export function apply(ctx) {
         art: { vat: hasVatArt, girl: hasGirlArt, continuous: hasContinuousArt },
         live: liveForDisplay(),
         spend,
+        ui: { visible: uiVisible },
         render: { at: lastRenderAt, count: renderCount },
       })
     }
@@ -711,7 +877,14 @@ export function apply(ctx) {
     if (!force && fresh && cached.doc !== null) {
       stateServed += 1
       lastStateAt = Date.now()
-      return jsonResponse({ ...cached.doc, cached: true })
+      await uiReady
+      /* Refresh account usage in the background; /pulse will pick it up on the
+         next tick. This keeps a cached balance response cheap without freezing
+         today/lifetime spend for another full poll cycle. */
+      if (Date.now() - usageCache.at >= USAGE_TTL_MS && usageCache.inflight === null) {
+        void getAccountUsage(cached.doc)
+      }
+      return jsonResponse({ ...cached.doc, ui: { visible: uiVisible }, cached: true })
     }
 
     let doc
@@ -738,7 +911,8 @@ export function apply(ctx) {
         error: doc.error,
         stale: true,
         live: liveForDisplay(),
-        spend: spendSummary(),
+        spend: doc.spend,
+        ui: { visible: uiVisible },
       }
     }
 
@@ -826,6 +1000,55 @@ export function apply(ctx) {
       table.push({ kind: 'global', name: '__RICE_BOWL_TOKEN__', value: issueToken() })
     }),
   )
+
+  /*
+   * /rice-vat on|off is a Host command so it works from any session and even
+   * while the visual is hidden. It only flips presentation; the session-event
+   * subscription below keeps recording usage either way.
+   */
+  ctx.inject(['commands'], (scope) => {
+    commandRegistered = true
+    scope.effect(() =>
+      scope.commands.register({
+        name: 'rice-vat',
+        description: 'Show or hide the rice vat visual',
+        input: { hint: 'on | off' },
+        handler: async ({ rawInput }) => {
+          await uiReady
+          const argument = String(rawInput ?? '').trim().toLowerCase()
+          if (argument !== 'on' && argument !== 'off') {
+            return { kind: 'error', text: 'Usage: /rice-vat on | off' }
+          }
+          await setUiVisible(argument === 'on')
+          return {
+            kind: 'success',
+            text: argument === 'on' ? 'Rice vat on · billing continues' : 'Rice vat off · billing continues',
+          }
+        },
+      }),
+    )
+  })
+
+  /* A different account must never inherit the previous account's totals. */
+  ctx.effect(() => {
+    const off = ctx.on('deepseek-account/signed-out', () => {
+      usageCache.value = null
+      usageCache.at = 0
+      usageCache.lastError = 'signed-out'
+      usageDiag.hasToday = false
+      usageDiag.hasTotal = false
+      usageDiag.hasAverage = false
+      usageDiag.dailyCount = 0
+      usageDiag.partial = false
+      usageDiag.lastError = 'signed-out'
+      cached = { at: 0, doc: null }
+      anchor.balance = null
+      anchor.currency = null
+      anchor.spent = 0
+      anchor.at = 0
+    })
+    return () => off?.()
+  })
 
   ctx.effect(() => {
     let alive = true
