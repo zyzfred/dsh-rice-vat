@@ -10,6 +10,12 @@
 
 ![Card](docs/card-v1.1.png)
 
+### What's new in 1.1.1
+
+- The price sign hugs the **Rice vat** title with the same gap in Chinese and English, and never covers the status lamp.
+- The light-theme gauge gets an outline and shadow so the track, fill, and marker stay legible in daylight.
+- Language is Chinese/English only: a Chinese DSH uses Chinese and every other DSH language uses English on cold start; a Details choice overrides only the vat for the current session.
+
 ---
 
 ## Install
@@ -25,7 +31,7 @@ Approve the `plugin_manager` confirmation.
 ### Option 2: manual
 
 ```
-plugin_manager  install_bundle  dsh-rice-vat@1.1.0
+plugin_manager  install_bundle  dsh-rice-vat@1.1.1
 ```
 
 or:
@@ -45,7 +51,7 @@ If it still looks wrong after a restart, toggle `dsh-rice-vat` off and on in **P
 | Item | Requirement |
 |---|---|
 | DSH | **≥ 0.2.2-rc.2** (account-level usage needs `deepseekAccount.getPlatformSession()`) |
-| Plugin | **1.1.0** |
+| Plugin | **1.1.1** |
 | DeepSeek account | **signed in**; balance and account usage come from the signed-in account |
 | API key | **not required**; the plugin never reads one |
 
@@ -69,7 +75,7 @@ The continuous band keeps a tiny minimum at ¥6, so crossing the boundary never 
 - **Today's rice** — DeepSeek Platform account spend today, not a local session estimate.
 - **All-time rice** — Platform's lifetime `total_costs` counter, across API keys, clients, and machines.
 - **Days left** — balance divided by the trailing 7 full-day average (today excluded).
-- The rice-price sign shows peak/off-peak; update time lives in Details.
+- The rice-price sign shows peak/off-peak right next to **Rice vat** (an 8px gap); it takes part in layout and never covers the status lamp on the right.
 
 > The local ledger still exists, but only drives the bite animation and a clearly-labelled local estimate. It never masquerades as the account total.
 
@@ -81,7 +87,7 @@ Each model consumption switches to the 16-frame, 4.6-second eating loop. The dec
 
 | Situation | Label |
 |---|---|
-| balance > ¥100 | Overflowing |
+| balance > ¥100 | Overflow |
 | ≥ 70% | Full |
 | 30–70% | Half |
 | < 30% | Low |
@@ -99,7 +105,7 @@ The status stays truthful while she eats; the bite amount is a separate floating
 - **Resize**: drag the corner grip, use arrow keys when focused, or double-click the grip to reset to 100%.
 - **Memory**: expanded/collapsed, position, and size persist across refreshes and restarts.
 - **Always on top**: mounted in `shell.overlay` with a top-layer z-index.
-- **Details**: principal/bonus, price period, update time, usage details, top-up, reset layout.
+- **Details**: principal/bonus, price period, update time, language, usage details, top-up, reset layout.
 - **Top safe inset**: the widget cannot be dragged into the window chrome (macOS traffic lights / Windows caption), where it would receive no pointer events.
 
 ### ⌨️ Commands
@@ -113,9 +119,11 @@ Host-level command; works from any session. The visual switch is written to `$DS
 
 ### 🌐 Chinese and English
 
-- Follows the DSH UI language: Simplified Chinese / English.
-- All visible copy, buttons, and aria labels go through the Client locale dictionaries.
-- Other DSH locales fall back to English.
+- The plugin currently ships Chinese and English copy only.
+- **Cold start**: Chinese when DSH is Chinese; English for any other DSH language (English, 日本語, Español, and so on).
+- Change DSH's global language in **Settings → General → Language**.
+- The vat's **Details → Language** lists only 中文 / English, with no "Follow DSH" option. A manual choice overrides only the vat card, not the rest of DSH, and lasts for the current DSH window/session; reopening DSH or opening a new window returns to the cold-start rule.
+- All visible copy, buttons, and aria labels use the same dictionaries; none are hardcoded Chinese.
 
 ---
 

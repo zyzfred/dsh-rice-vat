@@ -25,6 +25,7 @@ window.__ModuleLoader__.load({
     const EAT_MS = 4_600
     const BITE_MS = 2_200
     const STORE_KEY = 'rice-vat:ui:v2'
+    const LANG_KEY = 'rice-vat:lang:session'
     const MIN_SCALE = 0.75
     const MAX_SCALE = 1.35
     const Z_INDEX = 2147483000
@@ -107,6 +108,10 @@ window.__ModuleLoader__.load({
       pillAria: '展开米缸，余额 {balance}，还能吃 {days}',
       priceAria: '米价：{price}。{hours}',
       detailsTitle: '米缸详情',
+      language: '语言',
+      languageZh: '中文',
+      languageEn: 'English',
+      languageHint: '冷启动：DSH 是中文就显示中文，否则显示 English；手动选择只影响米缸，本次会话有效。',
     }
 
     const EN = {
@@ -129,11 +134,11 @@ window.__ModuleLoader__.load({
       details: 'Details',
       hideDetails: 'Hide',
       ricePrice: 'Rice price',
-      priceLabel: 'Price',
-      peak: 'Peak · Full price',
+      priceLabel: '',
+      peak: 'Peak · 100%',
       offPeak: 'Off-peak · 50%',
       statusFull: 'Full',
-      statusOverflow: 'Overflowing',
+      statusOverflow: 'Overflow',
       statusLow: 'Low',
       statusEmpty: 'Empty',
       statusSignedOut: 'Signed out',
@@ -166,6 +171,10 @@ window.__ModuleLoader__.load({
       pillAria: 'Expand rice vat; balance {balance}; days left {days}',
       priceAria: 'Rice price: {price}. {hours}',
       detailsTitle: 'Rice vat details',
+      language: 'Language',
+      languageZh: '中文',
+      languageEn: 'English',
+      languageHint: 'Cold start: Chinese when DSH is Chinese, English otherwise. A manual choice only affects the vat for this session.',
     }
 
     function makeFallbackT(dict) {
@@ -178,12 +187,8 @@ window.__ModuleLoader__.load({
       }
     }
 
-    const fallbackT = makeFallbackT(
-      (typeof document !== 'undefined' && String(document.documentElement?.lang ?? '').startsWith('zh'))
-        || (typeof navigator !== 'undefined' && String(navigator.language ?? '').startsWith('zh'))
-        ? ZH
-        : EN,
-    )
+    const ZH_T = makeFallbackT(ZH)
+    const EN_T = makeFallbackT(EN)
 
     /* ------------------------------------------------------------------ */
     /* Formatting and state helpers                                        */
@@ -239,10 +244,10 @@ window.__ModuleLoader__.load({
       return t('days', { n: Math.floor(value) })
     }
 
-    function formatClock(value) {
+    function formatClock(value, lang = activeLanguage()) {
       if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return '—'
       try {
-        return new Intl.DateTimeFormat(activeLanguage(), { hour: '2-digit', minute: '2-digit' }).format(new Date(value))
+        return new Intl.DateTimeFormat(lang, { hour: '2-digit', minute: '2-digit' }).format(new Date(value))
       } catch {
         const date = new Date(value)
         return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
@@ -268,6 +273,23 @@ window.__ModuleLoader__.load({
         return parsed !== null && typeof parsed === 'object' ? parsed : null
       } catch {
         return null
+      }
+    }
+
+    function readSessionLanguage() {
+      try {
+        const value = sessionStorage.getItem(LANG_KEY)
+        return value === 'zh' || value === 'en' ? value : null
+      } catch {
+        return null
+      }
+    }
+
+    function writeSessionLanguage(value) {
+      try {
+        sessionStorage.setItem(LANG_KEY, value)
+      } catch {
+        /* a session override is best-effort */
       }
     }
 
@@ -671,7 +693,7 @@ window.__ModuleLoader__.load({
 
     function clampPosition(x, y, scale, element) {
       if (typeof window === 'undefined') return { x, y }
-      const width = (element?.offsetWidth ?? 236) * scale
+      const width = (element?.offsetWidth ?? 244) * scale
       const height = (element?.offsetHeight ?? 260) * scale
       const minY = topSafeInset()
       const maxX = Math.max(8, window.innerWidth - width - 8)
@@ -717,12 +739,29 @@ window.__ModuleLoader__.load({
       return 'overflow'
     }
 
-    function RiceBowlCard({ t }) {
-      const tr = typeof t === 'function' ? t : fallbackT
+    function RiceBowlCard({ t, locale }) {
+      const stored = useMemo(readStored, [])
+      const [manualLanguage, setManualLanguage] = useState(readSessionLanguage)
+
+      const localeSnapshot = typeof locale?.getLocale === 'function' ? locale.getLocale() : null
+      const dshActive = String(localeSnapshot?.active ?? activeLanguage()).toLowerCase()
+      const autoLanguage = dshActive.startsWith('zh') ? 'zh' : 'en'
+      const activeButton = manualLanguage ?? autoLanguage
+
+      const autoT = typeof t === 'function' ? t : autoLanguage === 'zh' ? ZH_T : EN_T
+      const tr = manualLanguage === null ? autoT : manualLanguage === 'zh' ? ZH_T : EN_T
+      const formatLocale =
+        manualLanguage === null ? autoLanguage : manualLanguage === 'zh' ? 'zh-CN' : 'en-US'
+
       const reduced = useReducedMotion()
       const { doc, spend, live, visible, failed, lastOkAt, eating, bite, tick, retry } = useQuota()
 
-      const stored = useMemo(readStored, [])
+      function chooseLanguage(mode) {
+        const next = mode === 'zh' ? 'zh' : 'en'
+        setManualLanguage(next)
+        writeSessionLanguage(next)
+      }
+
       const [collapsed, setCollapsed] = useState(stored?.collapsed !== false)
       const [pos, setPos] = useState(() => storedPosition(stored?.pos))
       const [scale, setScale] = useState(() => clamp(Number.isFinite(stored?.scale) ? stored.scale : 1, MIN_SCALE, MAX_SCALE))
@@ -967,6 +1006,7 @@ window.__ModuleLoader__.load({
       const statusLabel = statusText
       const updatedAt = spend?.updatedAt ?? doc?.now ?? null
       const periodLabel = spend?.period === 'offPeak' ? tr('offPeak') : tr('peak')
+      const priceLabel = tr('priceLabel')
 
       const rootStyle = {
         position: 'fixed',
@@ -1050,7 +1090,7 @@ window.__ModuleLoader__.load({
           : signedOut
             ? tr('signedOutHint')
             : stale
-              ? `${tr('stale')} · ${tr('lastUpdated', { time: formatClock(updatedAt) })}`
+              ? `${tr('stale')} · ${tr('lastUpdated', { time: formatClock(updatedAt, formatLocale) })}`
               : status === 'empty'
                 ? tr('emptyHint')
                 : status === 'low'
@@ -1084,6 +1124,19 @@ window.__ModuleLoader__.load({
                 title: tr('drag'),
               },
               h('span', { className: 'rb-title' }, tr('title')),
+              !errorish
+                ? h(
+                    'span',
+                    {
+                      className: `rb-board${spend?.period === 'offPeak' ? ' is-sale' : ''}`,
+                      title: tr('priceAria', { price: periodLabel, hours: tr('peakHours') }),
+                    },
+                    priceLabel !== ''
+                      ? h('span', { className: 'rb-board__label' }, priceLabel)
+                      : null,
+                    h('span', { className: 'rb-board__value' }, periodLabel),
+                  )
+                : null,
               h(
                 'span',
                 { className: 'rb-status' },
@@ -1115,17 +1168,6 @@ window.__ModuleLoader__.load({
                   }),
                 ),
               ),
-              !errorish
-                ? h(
-                    'span',
-                    {
-                      className: `rb-board${spend?.period === 'offPeak' ? ' is-sale' : ''}`,
-                      title: tr('priceAria', { price: periodLabel, hours: tr('peakHours') }),
-                    },
-                    h('span', { className: 'rb-board__label' }, tr('priceLabel')),
-                    h('span', { className: 'rb-board__value' }, periodLabel),
-                  )
-                : null,
             ),
             h(Scene, {
               tier: errorish ? 'empty' : tier,
@@ -1305,8 +1347,35 @@ window.__ModuleLoader__.load({
                     'div',
                     { className: 'rb-detail__row' },
                     h('span', { className: 'rb-detail__label' }, tr('updated')),
-                    h('span', { className: 'rb-detail__value' }, formatClock(updatedAt)),
+                    h('span', { className: 'rb-detail__value' }, formatClock(updatedAt, formatLocale)),
                   ),
+                  h(
+                    'div',
+                    { className: 'rb-detail__row rb-detail__row--lang' },
+                    h('span', { className: 'rb-detail__label' }, tr('language')),
+                    h(
+                      'span',
+                      { className: 'rb-lang', role: 'group', 'aria-label': tr('language') },
+                      [
+                        ['zh', tr('languageZh')],
+                        ['en', tr('languageEn')],
+                      ].map(([id, label]) =>
+                        h(
+                          'button',
+                          {
+                            key: id,
+                            type: 'button',
+                            className: `rb-lang__btn${activeButton === id ? ' is-active' : ''}`,
+                            'aria-pressed': activeButton === id,
+                            'data-no-drag': true,
+                            onClick: () => chooseLanguage(id),
+                          },
+                          label,
+                        ),
+                      ),
+                    ),
+                  ),
+                  h('div', { className: 'rb-detail__note' }, tr('languageHint')),
                   h(
                     'div',
                     { className: 'rb-detail__note' },
@@ -1376,7 +1445,7 @@ window.__ModuleLoader__.load({
 .rb-shell { transform-origin: top left; }
 
 .rb-card {
-  width: 236px;
+  width: 244px;
   background: var(--dsw-alias-bg-layer-1, #1b1f2a);
   border: 1px solid var(--dsw-alias-border-l1, rgba(255,255,255,.12));
   border-radius: 14px;
@@ -1396,12 +1465,13 @@ window.__ModuleLoader__.load({
 
 .rb-head {
   position: relative;
-  display: flex; align-items: center; gap: 2px; height: 24px;
+  display: flex; align-items: center; gap: 3px; height: 24px;
   cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none;
 }
 .rb-head:active { cursor: grabbing; }
-.rb-title { font-size: 10.5px; letter-spacing: 1.1px; color: var(--dsw-alias-label-secondary, #9aa4b8); white-space: nowrap; }
-.rb-status { margin-left: auto; display: inline-flex; align-items: center; gap: 4px; font-size: 10px; color: var(--dsw-alias-label-secondary, #9aa4b8); white-space: nowrap; }
+.rb-title { flex: 0 0 auto; font-size: 10.5px; letter-spacing: 1.1px; color: var(--dsw-alias-label-secondary, #9aa4b8); white-space: nowrap; }
+.rb-status { position: relative; z-index: 1; flex: 0 0 auto; margin-left: 2px; display: inline-flex; align-items: center; gap: 4px; font-size: 10px; color: var(--dsw-alias-label-secondary, #9aa4b8); white-space: nowrap; }
+.rb-title + .rb-status { margin-left: auto; }
 .rb-dot { width: 5px; height: 5px; border-radius: 50%; flex: 0 0 auto; background: #e8b96a; box-shadow: 0 0 6px rgba(232,185,106,.5); }
 .rb-dot--full, .rb-dot--overflow { background: #e8b96a; }
 .rb-dot--low { background: #e0a35c; box-shadow: 0 0 6px rgba(224,163,92,.6); }
@@ -1503,21 +1573,66 @@ window.__ModuleLoader__.load({
 }
 
 .rb-gauge { margin: 7px 2px 0; }
-.rb-track { position: relative; height: 3px; border-radius: 999px; background: rgba(255,255,255,.09); }
+.rb-track {
+  position: relative; height: 4px; border-radius: 999px;
+  background: rgba(127,138,163,.22);
+  box-shadow:
+    inset 0 0 0 1px rgba(255,255,255,.16),
+    inset 0 1px 2px rgba(0,0,0,.35);
+}
 .rb-fill {
   position: absolute; inset: 0 auto 0 0; border-radius: 999px;
   background: linear-gradient(90deg, #d9c79e, #fffdf6);
-  box-shadow: 0 0 8px rgba(255,248,225,.22);
+  box-shadow:
+    0 0 0 1px rgba(20,16,10,.55),
+    0 0 8px rgba(255,248,225,.28);
   transition: width .6s cubic-bezier(.22,1,.36,1);
 }
 .rb-marker {
-  position: absolute; top: -3px; width: 6px; height: 9px; border-radius: 50% 50% 45% 45%;
+  position: absolute; top: -3px; width: 6px; height: 10px; border-radius: 50% 50% 45% 45%;
   background: linear-gradient(180deg, #fffdf6, #e9dcc0);
-  box-shadow: 0 0 5px rgba(255,250,235,.65);
+  box-shadow:
+    0 0 0 1px rgba(20,16,10,.5),
+    0 0 5px rgba(255,250,235,.65);
   transition: left .6s cubic-bezier(.22,1,.36,1);
 }
-.rb-ticks { display: flex; justify-content: space-between; margin-top: 4px; font-size: 8px; color: #707b92; }
+.rb-ticks { display: flex; justify-content: space-between; margin-top: 4px; font-size: 8px; color: var(--dsw-alias-label-tertiary, #707b92); }
 .rb-ticks span:last-child { text-align: right; }
+
+/* Daylight legibility: the pale rice bar sits on a near-white card in light
+   mode, so the groove gets an inset outline and the fill/marker get a dark rim
+   plus a contact shadow instead of relying on a white glow. */
+body:not([data-ds-dark-theme]) .rb-track {
+  background: rgba(45,61,86,.14);
+  box-shadow:
+    inset 0 0 0 1px rgba(45,61,86,.24),
+    inset 0 1px 2px rgba(45,61,86,.12);
+}
+body:not([data-ds-dark-theme]) .rb-fill {
+  background: linear-gradient(90deg, #b8792a, #d99f43 55%, #efc677);
+  box-shadow:
+    0 0 0 1px rgba(74,45,11,.55),
+    0 1px 2px rgba(74,45,11,.3),
+    inset 0 1px 0 rgba(255,255,255,.35);
+}
+body:not([data-ds-dark-theme]) .rb-marker {
+  background: linear-gradient(180deg, #f6cf85, #c4872f);
+  box-shadow:
+    0 0 0 1px rgba(74,45,11,.6),
+    0 1px 2px rgba(74,45,11,.3);
+}
+body:not([data-ds-dark-theme]) .rb-dot {
+  box-shadow:
+    0 0 0 1px rgba(105,72,24,.32),
+    0 0 6px rgba(232,185,106,.5);
+}
+body:not([data-ds-dark-theme]) .rb-dot--empty,
+body:not([data-ds-dark-theme]) .rb-dot--muted { box-shadow: none; }
+body:not([data-ds-dark-theme]) .rb-dot.is-stale {
+  box-shadow:
+    0 0 0 1px rgba(105,72,24,.32),
+    0 0 6px rgba(224,163,92,.5);
+}
 
 .rb-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; margin-top: 7px; }
 .rb-stat { display: flex; flex-direction: column; align-items: center; gap: 1px; min-width: 0; text-align: center; }
@@ -1542,36 +1657,68 @@ window.__ModuleLoader__.load({
   margin-left: 2px;
 }
 .rb-link:focus-visible, .rb-detail-link:focus-visible, .rb-chev:focus-visible, .rb-action:focus-visible,
-.rb-pill:focus-visible, .rb-resize:focus-visible {
+.rb-lang__btn:focus-visible, .rb-pill:focus-visible, .rb-resize:focus-visible {
   outline: 2px solid #f3e7c9; outline-offset: 2px;
 }
+body:not([data-ds-dark-theme]) .rb-link:focus-visible,
+body:not([data-ds-dark-theme]) .rb-detail-link:focus-visible,
+body:not([data-ds-dark-theme]) .rb-chev:focus-visible,
+body:not([data-ds-dark-theme]) .rb-action:focus-visible,
+body:not([data-ds-dark-theme]) .rb-lang__btn:focus-visible,
+body:not([data-ds-dark-theme]) .rb-pill:focus-visible,
+body:not([data-ds-dark-theme]) .rb-resize:focus-visible {
+  outline-color: #8a5a1e;
+}
 
+/* Keep the price sign in the title cluster, 8px from the title (3px flex gap
+   + 5px margin); the auto right margin keeps the status lamp and collapse
+   control pinned to the right. This reads as one "米缸 + 米价" unit in both
+   Chinese and English without ever covering the lamp. */
 .rb-board {
-  position: absolute; left: 50%; top: 50%; z-index: 2;
+  position: relative;
   display: inline-flex; align-items: center; justify-content: center; gap: 3px;
-  min-width: 96px; box-sizing: border-box; padding: 3px 6px; text-align: center;
-  transform: translate(-50%, -50%) rotate(-1.2deg); border-radius: 5px;
+  flex: 0 1 auto; min-width: 0; max-width: 100%; margin: 0 auto 0 5px;
+  box-sizing: border-box; padding: 3px 7px; text-align: center;
+  transform: rotate(-1.2deg); border-radius: 5px;
   background: linear-gradient(180deg, #8a5a34, #6b4226);
   border: 1px solid #4a2c18; box-shadow: 0 2px 5px rgba(0,0,0,.3);
+  overflow: hidden;
   transition: background .3s ease, box-shadow .3s ease;
 }
 .rb-board.is-sale {
   background: linear-gradient(180deg, #b4552f, #8a3a1f);
   box-shadow: 0 0 10px rgba(235,130,70,.34), 0 2px 5px rgba(0,0,0,.3);
 }
-.rb-board__label { font-size: 9px; line-height: 1.1; letter-spacing: .2px; color: #f0d8bd; white-space: nowrap; }
-.rb-board__value { font-size: 9px; line-height: 1.1; font-weight: 700; color: #fff4e4; white-space: nowrap; }
+.rb-board__label { flex: 0 0 auto; font-size: 9px; line-height: 1.1; letter-spacing: .2px; color: #f0d8bd; white-space: nowrap; }
+.rb-board__value { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: 9px; line-height: 1.1; font-weight: 700; color: #fff4e4; white-space: nowrap; }
 .rb-board.is-sale .rb-board__value { color: #ffd9a0; }
 
 .rb-detail {
   margin-top: 7px; padding: 7px 8px; border-radius: 8px;
   background: var(--dsw-alias-bg-layer-2, rgba(255,255,255,.04));
+  background: color-mix(in srgb, var(--dsw-alias-label-primary, #e8ecf5) 4%, transparent);
+  border: 1px solid var(--dsw-alias-border-l1, rgba(255,255,255,.12));
   font-size: 9px; line-height: 1.55; color: var(--dsw-alias-label-secondary, #9aa4b8);
 }
-.rb-detail__row { display: flex; justify-content: space-between; gap: 8px; }
+.rb-detail__row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .rb-detail__label { flex: 0 0 auto; }
 .rb-detail__value { text-align: right; color: var(--dsw-alias-label-primary, #e8ecf5); font-variant-numeric: tabular-nums; }
-.rb-detail__note { margin-top: 4px; color: #7f8aa3; }
+.rb-detail__row--lang { flex-wrap: wrap; row-gap: 4px; min-height: 22px; }
+.rb-lang { display: inline-flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 3px; flex: 0 0 auto; }
+.rb-lang__btn {
+  border: 1px solid var(--dsw-alias-border-l2, rgba(128,140,160,.35));
+  background: transparent; color: var(--dsw-alias-label-secondary, #9aa4b8);
+  border-radius: 5px; padding: 3px 6px; font: inherit; font-size: 9px;
+  line-height: 1.2; cursor: pointer;
+}
+.rb-lang__btn:hover { background: rgba(201,138,46,.12); color: var(--dsw-alias-label-primary, #e8ecf5); }
+.rb-lang__btn.is-active {
+  border-color: rgba(201,138,46,.68);
+  background: rgba(201,138,46,.16);
+  color: var(--dsw-alias-label-primary, #e8ecf5);
+  font-weight: 600;
+}
+.rb-detail__note { margin-top: 4px; color: var(--dsw-alias-label-tertiary, #7f8aa3); }
 .rb-detail__actions { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
 .rb-action {
   border: 1px solid var(--dsw-alias-border-l1, rgba(255,255,255,.12));
@@ -1658,7 +1805,8 @@ window.__ModuleLoader__.load({
         ctx.effect(() =>
           ctx.slots.inject('shell.overlay', () => {
             const bound = ctx.locale.bind(NS)
-            const Panel = (props) => h(RiceBowlCard, { ...props, t: typeof props.t === 'function' ? props.t : bound })
+            const Panel = (props) =>
+              h(RiceBowlCard, { ...props, t: typeof props.t === 'function' ? props.t : bound, locale: ctx.locale })
             return ctx.slots.register({ name: 'shell.overlay', id: 'rice-bowl', order: 900, locale: NS }, Panel)
           }),
         )
